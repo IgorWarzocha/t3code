@@ -177,4 +177,17 @@ describe("wsNativeApi", () => {
 
     await expect(request).rejects.toThrow("boom");
   });
+
+  it("rejects pending requests when websocket disconnects", async () => {
+    setWindowSearch("?ws=ws%3A%2F%2F127.0.0.1%3A4403");
+    const { getOrCreateWsNativeApi } = await import("./wsNativeApi");
+    const api = getOrCreateWsNativeApi();
+
+    const request = api.todos.list();
+    const socket = MockWebSocket.instances[0];
+    await waitForCondition(() => (socket?.sentMessages.length ?? 0) > 0);
+    socket?.close();
+
+    await expect(request).rejects.toThrow("websocket disconnected");
+  });
 });
