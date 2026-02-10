@@ -761,6 +761,23 @@ async function main() {
     if ((rangedAsset.headers.get("vary") ?? "").toLowerCase() !== "range") {
       throw new Error("Smoke test failed: expected vary=range on ranged asset response.");
     }
+    const oversizedSuffixRangedAsset = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=-999999",
+      },
+    });
+    if (oversizedSuffixRangedAsset.status !== 206) {
+      throw new Error(
+        `Smoke test failed: expected oversized suffix range status 206, received ${oversizedSuffixRangedAsset.status}.`,
+      );
+    }
+    if (oversizedSuffixRangedAsset.headers.get("content-range") !== `bytes 0-${assetContentLength - 1}/${assetContentLength}`) {
+      throw new Error(
+        `Smoke test failed: expected oversized suffix content-range bytes 0-${String(
+          assetContentLength - 1,
+        )}/${String(assetContentLength)}, got ${String(oversizedSuffixRangedAsset.headers.get("content-range"))}.`,
+      );
+    }
     const spacedRangedAsset = await fetch(assetUrl, {
       headers: {
         Range: `bytes = 0 - ${rangeEnd}`,
