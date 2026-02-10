@@ -1559,6 +1559,24 @@ async function main() {
       });
     });
 
+    const bootstrapResponse = await sendWsRequest(ws, {
+      id: "smoke-bootstrap",
+      method: "app.bootstrap",
+    });
+    if (
+      bootstrapResponse.ok !== true ||
+      bootstrapResponse.result?.launchCwd !== appRoot ||
+      typeof bootstrapResponse.result?.projectName !== "string" ||
+      bootstrapResponse.result.projectName.length === 0 ||
+      bootstrapResponse.result?.provider !== "codex" ||
+      typeof bootstrapResponse.result?.model !== "string" ||
+      bootstrapResponse.result.model.length === 0 ||
+      typeof bootstrapResponse.result?.session?.sessionId !== "string" ||
+      bootstrapResponse.result.session.sessionId.length === 0
+    ) {
+      throw new Error("Smoke test failed: app.bootstrap response payload mismatch.");
+    }
+
     const todoTitle = `Smoke todo ${String(backendPort)}-${String(webPort)}-${Date.now()}`;
     const addedTodosResponse = await sendWsRequest(ws, {
       id: "smoke-todos-add",
