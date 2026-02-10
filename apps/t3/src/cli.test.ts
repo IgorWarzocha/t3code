@@ -313,6 +313,11 @@ describe("parseCliOptions", () => {
     expect(options.launchCwd).toBe(path.resolve("/workspace", "-project"));
   });
 
+  it("accepts dash-prefixed cwd values with equals-style --cwd argument", () => {
+    const options = parseCliOptions(["--cwd=-project"], {}, "/workspace");
+    expect(options.launchCwd).toBe(path.resolve("/workspace", "-project"));
+  });
+
   it("treats known flags after --cwd as missing values", () => {
     expect(() => parseCliOptions(["--cwd", "--help"], {}, "/workspace")).toThrow(
       "Missing value for --cwd",
