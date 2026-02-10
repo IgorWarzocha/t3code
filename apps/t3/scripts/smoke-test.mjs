@@ -1606,6 +1606,26 @@ async function main() {
       throw new Error("Smoke test failed: removed todo is still present in todos list.");
     }
 
+    const terminalRunResponse = await sendWsRequest(ws, {
+      id: "smoke-terminal-run",
+      method: "terminal.run",
+      params: {
+        command: "echo smoke-terminal-ok",
+        cwd: appRoot,
+        timeoutMs: 5_000,
+      },
+    });
+    if (
+      terminalRunResponse.ok !== true ||
+      typeof terminalRunResponse.result?.stdout !== "string" ||
+      !terminalRunResponse.result.stdout.toLowerCase().includes("smoke-terminal-ok") ||
+      terminalRunResponse.result?.stderr !== "" ||
+      terminalRunResponse.result?.timedOut !== false ||
+      terminalRunResponse.result?.code !== 0
+    ) {
+      throw new Error("Smoke test failed: terminal.run response payload mismatch.");
+    }
+
     const duplicateTokenWhileConnectedWs = new WebSocket(
       `${parsedWsUrl.origin}${parsedWsUrl.pathname}?token=${encodeURIComponent(
         parsedWsUrl.searchParams.get("token") ?? "",
