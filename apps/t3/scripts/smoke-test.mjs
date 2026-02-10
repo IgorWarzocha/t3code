@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -218,6 +219,91 @@ function getFreePort() {
     });
     server.on("error", (error) => reject(error));
   });
+}
+
+function createFakeCodexAppServerBinary() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-smoke-fake-codex-"));
+  const binaryPath = path.join(tempDir, "codex");
+  const script = `#!/usr/bin/env node
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+let turnCount = 0;
+const send = (message) => process.stdout.write(\`\${JSON.stringify(message)}\\n\`);
+
+rl.on("line", (line) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return;
+  }
+
+  if (!("id" in parsed) || typeof parsed.method !== "string") {
+    return;
+  }
+
+  if (parsed.method === "initialize") {
+    send({ id: parsed.id, result: {} });
+    return;
+  }
+
+  if (parsed.method === "thread/start") {
+    send({ id: parsed.id, result: { thread: { id: "thread-fake" } } });
+    return;
+  }
+
+  if (parsed.method === "thread/resume") {
+    const threadId =
+      parsed.params &&
+      typeof parsed.params === "object" &&
+      typeof parsed.params.threadId === "string"
+        ? parsed.params.threadId
+        : "thread-fake";
+    send({ id: parsed.id, result: { thread: { id: threadId } } });
+    return;
+  }
+
+  if (parsed.method === "turn/start") {
+    turnCount += 1;
+    send({ id: parsed.id, result: { turn: { id: \`turn-\${turnCount}\` } } });
+    setTimeout(() => {
+      send({
+        id: \`approval-\${turnCount}\`,
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "thread-fake",
+          turnId: \`turn-\${turnCount}\`,
+          itemId: \`item-\${turnCount}\`,
+        },
+      });
+    }, 25);
+    return;
+  }
+
+  if (parsed.method === "turn/interrupt") {
+    send({ id: parsed.id, result: {} });
+    return;
+  }
+
+  send({
+    id: parsed.id,
+    error: {
+      code: -32601,
+      message: \`Unsupported fake codex method: \${parsed.method}\`,
+    },
+  });
+});
+`;
+  fs.writeFileSync(binaryPath, script, { encoding: "utf8", mode: 0o755 });
+
+  return {
+    tempDir,
+    binaryPath,
+  };
 }
 
 function waitForProcessExit(processRef) {
@@ -484,10 +570,16 @@ async function main() {
   const [backendPort, webPort] = await Promise.all([getFreePort(), getFreePort()]);
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const appRoot = path.resolve(scriptDir, "..");
+  const fakeCodex = createFakeCodexAppServerBinary();
   const distCli = path.join(appRoot, "dist", "cli.js");
   if (!fs.existsSync(distCli)) {
     throw new Error("Missing dist/cli.js. Run `bun run --cwd apps/t3 build` first.");
   }
+
+  const runtimeEnv = {
+    ...process.env,
+    PATH: `${fakeCodex.tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+  };
 
   const child = spawn(
     process.execPath,
@@ -501,7 +593,7 @@ async function main() {
     ],
     {
       cwd: appRoot,
-      env: process.env,
+      env: runtimeEnv,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -2239,6 +2331,144 @@ async function main() {
       );
     }
 
+    const providerTurnResponse = await sendWsRequest(ws, {
+      id: "smoke-providers-send-turn-bootstrap",
+      method: "providers.sendTurn",
+      params: {
+        sessionId: bootstrapSessionId,
+        input: "smoke provider turn",
+      },
+    });
+    if (
+      providerTurnResponse.ok !== true ||
+      typeof providerTurnResponse.result?.threadId !== "string" ||
+      providerTurnResponse.result.threadId.length === 0 ||
+      typeof providerTurnResponse.result?.turnId !== "string" ||
+      providerTurnResponse.result.turnId.length === 0
+    ) {
+      throw new Error(
+        `Smoke test failed: expected successful providers.sendTurn payload, got ${JSON.stringify(
+          providerTurnResponse,
+        )}.`,
+      );
+    }
+
+    const providerApprovalRequestEvent = await waitForWsEvent(
+      ws,
+      (message) =>
+        message.channel === "provider:event" &&
+        message.payload?.kind === "request" &&
+        message.payload?.method === "item/commandExecution/requestApproval" &&
+        message.payload?.sessionId === bootstrapSessionId &&
+        typeof message.payload?.requestId === "string" &&
+        message.payload.requestId.length > 0,
+      "provider-approval-request",
+      20_000,
+    );
+    if (
+      providerApprovalRequestEvent.payload?.requestKind !== "command" ||
+      typeof providerApprovalRequestEvent.payload?.requestId !== "string" ||
+      providerApprovalRequestEvent.payload.requestId.length === 0
+    ) {
+      throw new Error(
+        `Smoke test failed: provider approval request event payload mismatch: ${JSON.stringify(
+          providerApprovalRequestEvent,
+        )}.`,
+      );
+    }
+
+    const providerRespondResponse = await sendWsRequest(ws, {
+      id: "smoke-providers-respond-bootstrap",
+      method: "providers.respondToRequest",
+      params: {
+        sessionId: bootstrapSessionId,
+        requestId: providerApprovalRequestEvent.payload.requestId,
+        decision: "accept",
+      },
+    });
+    if (providerRespondResponse.ok !== true || providerRespondResponse.result !== null) {
+      throw new Error(
+        `Smoke test failed: expected successful providers.respondToRequest payload, got ${JSON.stringify(
+          providerRespondResponse,
+        )}.`,
+      );
+    }
+
+    const providerInterruptResponse = await sendWsRequest(ws, {
+      id: "smoke-providers-interrupt-bootstrap",
+      method: "providers.interruptTurn",
+      params: {
+        sessionId: bootstrapSessionId,
+        turnId: providerTurnResponse.result.turnId,
+      },
+    });
+    if (providerInterruptResponse.ok !== true || providerInterruptResponse.result !== null) {
+      throw new Error(
+        `Smoke test failed: expected successful providers.interruptTurn payload, got ${JSON.stringify(
+          providerInterruptResponse,
+        )}.`,
+      );
+    }
+
+    const providerStartSessionResponse = await sendWsRequest(ws, {
+      id: "smoke-providers-start-session",
+      method: "providers.startSession",
+      params: {
+        provider: "codex",
+      },
+    });
+    if (
+      providerStartSessionResponse.ok !== true ||
+      typeof providerStartSessionResponse.result?.sessionId !== "string" ||
+      providerStartSessionResponse.result.sessionId.length === 0 ||
+      providerStartSessionResponse.result?.provider !== "codex" ||
+      providerStartSessionResponse.result?.status !== "ready"
+    ) {
+      throw new Error(
+        `Smoke test failed: expected successful providers.startSession payload, got ${JSON.stringify(
+          providerStartSessionResponse,
+        )}.`,
+      );
+    }
+    const smokeStartedSessionId = providerStartSessionResponse.result.sessionId;
+
+    const providerStopSessionResponse = await sendWsRequest(ws, {
+      id: "smoke-providers-stop-started-session",
+      method: "providers.stopSession",
+      params: {
+        sessionId: smokeStartedSessionId,
+      },
+    });
+    if (providerStopSessionResponse.ok !== true || providerStopSessionResponse.result !== null) {
+      throw new Error(
+        `Smoke test failed: expected successful providers.stopSession payload, got ${JSON.stringify(
+          providerStopSessionResponse,
+        )}.`,
+      );
+    }
+
+    const listedSessionsAfterProviderStopResponse = await sendWsRequest(ws, {
+      id: "smoke-providers-list-sessions-after-stop",
+      method: "providers.listSessions",
+    });
+    if (
+      listedSessionsAfterProviderStopResponse.ok !== true ||
+      !Array.isArray(listedSessionsAfterProviderStopResponse.result)
+    ) {
+      throw new Error(
+        "Smoke test failed: expected providers.listSessions array response after stop.",
+      );
+    }
+    if (
+      listedSessionsAfterProviderStopResponse.result.some(
+        (session) => session?.sessionId === smokeStartedSessionId,
+      )
+    ) {
+      throw new Error(
+        `Smoke test failed: providers.stopSession session ${smokeStartedSessionId} still present.`,
+      );
+    }
+
     const todoTitle = `Smoke todo ${String(backendPort)}-${String(webPort)}-${Date.now()}`;
     const addedTodosResponse = await sendWsRequest(ws, {
       id: "smoke-todos-add",
@@ -2980,6 +3210,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await terminateProcess(child);
+    fs.rmSync(fakeCodex.tempDir, { recursive: true, force: true });
   }
 }
 
