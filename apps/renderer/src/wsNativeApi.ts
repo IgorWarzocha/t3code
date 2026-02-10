@@ -41,12 +41,11 @@ class WsNativeApiClient {
       return this.connectPromise;
     }
 
-    this.connectPromise = new Promise<WebSocket>((resolve, reject) => {
+    const connectAttempt = new Promise<WebSocket>((resolve, reject) => {
       let socket: WebSocket;
       try {
         socket = new WebSocket(this.wsUrl);
       } catch {
-        this.connectPromise = null;
         reject(new Error("Failed to connect to local t3 runtime."));
         return;
       }
@@ -77,7 +76,14 @@ class WsNativeApiClient {
       });
     });
 
-    return this.connectPromise;
+    this.connectPromise = connectAttempt;
+    connectAttempt.catch(() => {
+      if (this.connectPromise === connectAttempt) {
+        this.connectPromise = null;
+      }
+    });
+
+    return connectAttempt;
   }
 
   private async request(method: string, params?: unknown) {
