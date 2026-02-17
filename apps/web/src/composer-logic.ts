@@ -99,6 +99,18 @@ export function replaceTextRange(
   return { text: nextText, cursor: safeStart + replacement.length };
 }
 
+export function extractTaggedPaths(text: string): { cleanText: string; paths: string[] } {
+  const paths: string[] = [];
+  const cleanText = text.replace(/@(\S+)/g, (_match, path: string) => {
+    paths.push(path);
+    return "";
+  });
+  if (paths.length === 0) {
+    return { cleanText: text.trim(), paths: [] };
+  }
+  return { cleanText: cleanText.replace(/ {2,}/g, " ").trim(), paths };
+}
+
 export function buildPromptInput(text: string, taggedPaths: string[]): string {
   const trimmedPrompt = text.trim();
   const normalizedPaths = dedupePaths(taggedPaths);

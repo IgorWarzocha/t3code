@@ -36,7 +36,10 @@ import { isElectron } from "../env";
 import { buildBootstrapInput } from "../historyBootstrap";
 import {
   type ComposerTriggerKind,
+  buildPromptInput,
+  buildUserVisiblePrompt,
   detectComposerTrigger,
+  extractTaggedPaths,
   replaceTextRange,
 } from "../composer-logic";
 import {
@@ -1056,6 +1059,9 @@ export default function ChatView() {
     e.preventDefault();
     if (!api || !activeThread || isSending || isConnecting) return;
     const trimmed = prompt.trim();
+    const { cleanText, paths: taggedPaths } = extractTaggedPaths(trimmed);
+    const userVisibleText = buildUserVisiblePrompt(cleanText, taggedPaths);
+    const modelText = buildPromptInput(cleanText, taggedPaths);
     if (!trimmed && composerImages.length === 0) return;
     if (!activeProject) return;
     const composerImagesSnapshot = [...composerImages];
@@ -1120,7 +1126,7 @@ export default function ChatView() {
       type: "PUSH_USER_MESSAGE",
       threadId: activeThread.id,
       id: crypto.randomUUID(),
-      text: trimmed,
+      text: userVisibleText,
       ...(messageAttachments.length > 0 ? { attachments: messageAttachments } : {}),
     });
     const previousMessages = activeThread.messages;
@@ -1148,14 +1154,14 @@ export default function ChatView() {
       const shouldBootstrap =
         previousMessages.length > 0 &&
         (sessionInfo.continuityState === "new" || sessionInfo.continuityState === "fallback_new");
-      const latestPromptForBootstrap = trimmed || IMAGE_ONLY_BOOTSTRAP_PROMPT;
+      const latestPromptForBootstrap = modelText || IMAGE_ONLY_BOOTSTRAP_PROMPT;
       const input = shouldBootstrap
         ? buildBootstrapInput(
             previousMessages,
             latestPromptForBootstrap,
             PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
           ).text
-        : trimmed || undefined;
+        : modelText || undefined;
       await api.providers.sendTurn({
         sessionId: sessionInfo.sessionId,
         ...(input ? { input } : {}),
