@@ -120,6 +120,7 @@ export default function BranchToolbar({
     if (sessionId && worktreePath !== activeWorktreePath) {
       void api?.providers.stopSession({ sessionId }).catch(() => undefined);
     }
+    void api?.threads.updateBranch({ threadId: activeThreadId, branch, worktreePath }).catch(() => undefined);
     dispatch({ type: "SET_THREAD_BRANCH", threadId: activeThreadId, branch, worktreePath });
   };
 

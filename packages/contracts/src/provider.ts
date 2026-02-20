@@ -47,6 +47,7 @@ export const providerSessionSchema = z.object({
 
 export const providerSessionStartInputSchema = z.object({
   provider: providerKindSchema.default("codex"),
+  threadId: z.string().trim().min(1).optional(),
   cwd: z.string().min(1).optional(),
   model: z.string().trim().min(1).optional(),
   resumeThreadId: z.string().trim().min(1).optional(),
@@ -79,6 +80,8 @@ export const providerSendTurnAttachmentInputSchema = z.discriminatedUnion("type"
 export const providerSendTurnInputSchema = z
   .object({
     sessionId: z.string().min(1),
+    clientMessageId: z.string().trim().min(1).optional(),
+    clientMessageText: z.string().max(PROVIDER_SEND_TURN_MAX_INPUT_CHARS).optional(),
     input: z.string().trim().min(1).max(PROVIDER_SEND_TURN_MAX_INPUT_CHARS).optional(),
     attachments: z
       .array(providerSendTurnAttachmentInputSchema)

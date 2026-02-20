@@ -31,6 +31,11 @@ import {
 import type { CodexThreadTurnSnapshot } from "./codexAppServerManager";
 import { CodexAppServerManager } from "./codexAppServerManager";
 import { FilesystemCheckpointStore } from "./filesystemCheckpointStore";
+import type { PersistenceService } from "./persistenceService";
+
+export interface ProviderManagerOptions {
+  persistenceService?: PersistenceService | undefined;
+}
 
 export interface ProviderManagerEvents {
   event: [event: ProviderEvent];
@@ -163,6 +168,7 @@ function buildCheckpoints(turns: CodexThreadTurnSnapshot[]): ProviderCheckpoint[
 export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
   private readonly codex = new CodexAppServerManager();
   private readonly filesystemCheckpointStore = new FilesystemCheckpointStore();
+  private readonly persistenceService: PersistenceService | undefined;
   private readonly threadLogsDir: string;
   private readonly threadLogStreams = new Map<string, fs.WriteStream>();
   private readonly sessionThreadIds = new Map<string, string>();
@@ -176,12 +182,21 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
     }
 
     this.routeEventToThreadLog(event);
+    try {
+      this.persistenceService?.ingestProviderEvent(event);
+    } catch {
+      // Persistence failures should not break provider streaming.
+    }
+    if (event.method === "session/closed" || event.method === "session/exited") {
+      this.persistenceService?.unbindSession(event.sessionId);
+    }
     this.emit("event", event);
     this.maybeCaptureFilesystemCheckpoint(event);
   };
 
-  constructor() {
+  constructor(options: ProviderManagerOptions = {}) {
     super();
+    this.persistenceService = options.persistenceService;
 
     const logsDir = path.resolve(process.cwd(), ".logs");
     this.threadLogsDir = path.join(logsDir, "threads");
@@ -197,6 +212,17 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
     }
 
     const session = await this.codex.startSession(input);
+    if (input.threadId) {
+      try {
+        this.persistenceService?.bindSessionToThread(
+          session.sessionId,
+          input.threadId,
+          session.threadId ?? null,
+        );
+      } catch {
+        // Runtime session establishment should proceed even if persistence fails.
+      }
+    }
     if (session.threadId) {
       this.sessionThreadIds.set(session.sessionId, session.threadId);
       this.flushPendingSessionEvents(session.sessionId, session.threadId);
@@ -215,6 +241,11 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
       throw new Error(`Unknown provider session: ${input.sessionId}`);
     }
 
+    try {
+      this.persistenceService?.persistUserMessageForTurn(input);
+    } catch {
+      // User turn persistence is best-effort on runtime send.
+    }
     return this.codex.sendTurn(input);
   }
 
@@ -239,6 +270,7 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
   stopSession(raw: ProviderStopSessionInput): void {
     const input = providerStopSessionInputSchema.parse(raw);
     this.codex.stopSession(input.sessionId);
+    this.persistenceService?.unbindSession(input.sessionId);
     this.sessionThreadIds.delete(input.sessionId);
     this.pendingEventsBySession.delete(input.sessionId);
     this.sessionCheckpointCwds.delete(input.sessionId);
@@ -483,6 +515,7 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
             return;
           }
           const snapshot = await this.codex.readThread(event.sessionId);
+          await this.persistCheckpointSummaryForTurn(event, initializedCwd, snapshot.threadId, snapshot.turns);
           this.emitCheckpointCaptured(event.sessionId, snapshot.threadId, snapshot.turns.length);
         })
         .catch((error) => {
@@ -504,6 +537,7 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
         threadId: snapshot.threadId,
         turnCount: snapshot.turns.length,
       });
+      await this.persistCheckpointSummaryForTurn(event, checkpointCwd, snapshot.threadId, snapshot.turns);
       this.emitCheckpointCaptured(event.sessionId, snapshot.threadId, snapshot.turns.length);
     }).catch((error) => {
       const message = error instanceof Error ? error.message : "Failed to capture checkpoint.";
@@ -638,5 +672,48 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
     );
     this.threadLogStreams.set(threadId, stream);
     return stream;
+  }
+
+  private async persistCheckpointSummaryForTurn(
+    event: ProviderEvent,
+    cwd: string,
+    runtimeThreadId: string,
+    turns: CodexThreadTurnSnapshot[],
+  ): Promise<void> {
+    if (!this.persistenceService) {
+      return;
+    }
+    if (turns.length === 0) {
+      return;
+    }
+
+    const toTurnCount = turns.length;
+    const fromTurnCount = Math.max(0, toTurnCount - 1);
+    let diff = "";
+    try {
+      diff = await this.filesystemCheckpointStore.diffCheckpoints({
+        cwd,
+        threadId: runtimeThreadId,
+        fromTurnCount,
+        toTurnCount,
+      });
+    } catch {
+      return;
+    }
+
+    const payload = asObject(event.payload);
+    const turn = asObject(payload?.turn);
+    const latestTurn = turns[toTurnCount - 1];
+    const turnId = asString(turn?.id) ?? latestTurn?.id ?? null;
+    const status = asString(turn?.status);
+    this.persistenceService.persistTurnDiffSummaryFromCheckpoint({
+      sessionId: event.sessionId,
+      runtimeThreadId,
+      turnId,
+      checkpointTurnCount: toTurnCount,
+      completedAt: event.createdAt,
+      ...(status ? { status } : {}),
+      diff,
+    });
   }
 }

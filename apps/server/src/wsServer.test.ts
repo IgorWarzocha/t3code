@@ -13,10 +13,10 @@ import {
   WS_METHODS,
   type KeybindingsConfig,
   type ResolvedKeybindingsConfig,
+  type StateEvent,
   type WsPush,
   type WsResponse,
 } from "@t3tools/contracts";
-import { ProjectRegistry } from "./projectRegistry";
 import { compileResolvedKeybindingRule, DEFAULT_KEYBINDINGS } from "./keybindings";
 import type {
   TerminalClearInput,
@@ -28,6 +28,7 @@ import type {
   TerminalWriteInput,
 } from "@t3tools/contracts";
 import type { TerminalManager } from "./terminalManager";
+import { PersistenceService } from "./persistenceService";
 
 interface PendingMessages {
   queue: unknown[];
@@ -207,6 +208,15 @@ function compileKeybindings(bindings: KeybindingsConfig): ResolvedKeybindingsCon
   return resolved;
 }
 
+async function waitForPush(ws: WebSocket, channel: string): Promise<WsPush> {
+  while (true) {
+    const message = (await waitForMessage(ws)) as WsPush;
+    if (message.type === "push" && message.channel === channel) {
+      return message;
+    }
+  }
+}
+
 const DEFAULT_RESOLVED_KEYBINDINGS = compileKeybindings([...DEFAULT_KEYBINDINGS]);
 
 function mergeWithDefaultsForTest(custom: KeybindingsConfig): ResolvedKeybindingsConfig {
@@ -246,12 +256,16 @@ describe("WebSocket Server", () => {
     } = {},
   ): ReturnType<typeof createServer> {
     const stateDir = options.stateDir ?? makeTempDir("t3code-ws-state-");
+    const persistenceService = new PersistenceService({
+      dbPath: path.join(stateDir, "state.sqlite"),
+      legacyProjectsJsonPath: path.join(stateDir, "projects.json"),
+    });
     return createServer({
       port: 0,
       cwd: options.cwd ?? "/test/project",
       ...(options.devUrl ? { devUrl: options.devUrl } : {}),
       ...(options.authToken ? { authToken: options.authToken } : {}),
-      projectRegistry: new ProjectRegistry(stateDir),
+      persistenceService,
       ...(options.gitManager ? { gitManager: options.gitManager as never } : {}),
       ...(options.terminalManager ? { terminalManager: options.terminalManager } : {}),
     });
@@ -644,6 +658,166 @@ describe("WebSocket Server", () => {
     const response = await sendRequest(ws, WS_METHODS.providersListSessions);
     expect(response.error).toBeUndefined();
     expect(response.result).toEqual([]);
+  });
+
+  it("supports state bootstrap and ordered catch-up events", async () => {
+    const stateDir = makeTempDir("t3code-ws-state-bootstrap-");
+    const projectCwd = makeTempDir("t3code-ws-state-project-");
+    server = createTestServer({ cwd: "/test", stateDir });
+    await server.start();
+    const addr = server.httpServer.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+    await waitForMessage(ws);
+
+    const addedProject = await sendRequest(ws, WS_METHODS.projectsAdd, { cwd: projectCwd });
+    expect(addedProject.error).toBeUndefined();
+    const projectId = (addedProject.result as { project: { id: string } }).project.id;
+
+    const createdThread = await sendRequest(ws, WS_METHODS.threadsCreate, {
+      projectId,
+      title: "My Thread",
+      model: "gpt-5.3-codex",
+    });
+    expect(createdThread.error).toBeUndefined();
+    const threadId = (createdThread.result as { thread: { id: string } }).thread.id;
+
+    const updatedThread = await sendRequest(ws, WS_METHODS.threadsUpdateTitle, {
+      threadId,
+      title: "Updated Thread Title",
+    });
+    expect(updatedThread.error).toBeUndefined();
+
+    const bootstrap = await sendRequest(ws, WS_METHODS.stateBootstrap);
+    expect(bootstrap.error).toBeUndefined();
+    const snapshot = bootstrap.result as {
+      projects: Array<{ id: string }>;
+      threads: Array<{ id: string; title: string }>;
+      lastStateSeq: number;
+    };
+    expect(snapshot.projects).toHaveLength(1);
+    expect(snapshot.threads).toHaveLength(1);
+    expect(snapshot.threads[0]?.title).toBe("Updated Thread Title");
+    expect(snapshot.lastStateSeq).toBeGreaterThan(0);
+
+    const catchUp = await sendRequest(ws, WS_METHODS.stateCatchUp, { afterSeq: 0 });
+    expect(catchUp.error).toBeUndefined();
+    const events = (catchUp.result as { events: StateEvent[] }).events;
+    expect(events.length).toBeGreaterThanOrEqual(3);
+    for (let index = 1; index < events.length; index += 1) {
+      const previous = events[index - 1];
+      const current = events[index];
+      expect(previous).toBeDefined();
+      expect(current).toBeDefined();
+      if (!previous || !current) continue;
+      expect(current.seq).toBeGreaterThan(previous.seq);
+    }
+    expect(events.some((event) => event.eventType === "project.upsert")).toBe(true);
+    expect(events.some((event) => event.eventType === "thread.upsert")).toBe(true);
+  });
+
+  it("broadcasts ordered state.event pushes", async () => {
+    const stateDir = makeTempDir("t3code-ws-state-events-");
+    const projectCwd = makeTempDir("t3code-ws-state-events-project-");
+    server = createTestServer({ cwd: "/test", stateDir });
+    await server.start();
+    const addr = server.httpServer.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const writerWs = await connectWs(port);
+    connections.push(writerWs);
+    await waitForMessage(writerWs);
+
+    const observerWs = await connectWs(port);
+    connections.push(observerWs);
+    await waitForMessage(observerWs);
+
+    const addedProject = await sendRequest(writerWs, WS_METHODS.projectsAdd, { cwd: projectCwd });
+    expect(addedProject.error).toBeUndefined();
+    const firstStatePush = await waitForPush(observerWs, WS_CHANNELS.stateEvent);
+    const firstEvent = firstStatePush.data as StateEvent;
+    expect(firstEvent.eventType).toBe("project.upsert");
+
+    const projectId = (addedProject.result as { project: { id: string } }).project.id;
+    const createdThread = await sendRequest(writerWs, WS_METHODS.threadsCreate, {
+      projectId,
+      title: "State Event Thread",
+      model: "gpt-5.3-codex",
+    });
+    expect(createdThread.error).toBeUndefined();
+    const secondStatePush = await waitForPush(observerWs, WS_CHANNELS.stateEvent);
+    const secondEvent = secondStatePush.data as StateEvent;
+    expect(secondEvent.eventType).toBe("thread.upsert");
+    expect(secondEvent.seq).toBeGreaterThan(firstEvent.seq);
+  });
+
+  it("imports legacy renderer state idempotently", async () => {
+    const stateDir = makeTempDir("t3code-ws-legacy-import-");
+    const projectCwd = makeTempDir("t3code-ws-legacy-import-project-");
+    server = createTestServer({ cwd: "/test", stateDir });
+    await server.start();
+    const addr = server.httpServer.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+    await waitForMessage(ws);
+
+    const firstImport = await sendRequest(ws, WS_METHODS.stateImportLegacyRendererState, {
+      projects: [
+        {
+          id: "project-legacy-1",
+          name: "legacy",
+          cwd: projectCwd,
+          scripts: [],
+        },
+      ],
+      threads: [
+        {
+          id: "thread-legacy-1",
+          projectId: "project-legacy-1",
+          title: "Legacy Thread",
+          model: "gpt-5.3-codex",
+          createdAt: "2026-02-19T00:00:00.000Z",
+          messages: [
+            {
+              id: "msg-legacy-1",
+              role: "user",
+              text: "hello from legacy",
+              createdAt: "2026-02-19T00:00:01.000Z",
+              streaming: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(firstImport.error).toBeUndefined();
+    expect(firstImport.result).toEqual({
+      imported: true,
+      alreadyImported: false,
+    });
+
+    const secondImport = await sendRequest(ws, WS_METHODS.stateImportLegacyRendererState, {
+      projects: [],
+      threads: [],
+    });
+    expect(secondImport.error).toBeUndefined();
+    expect(secondImport.result).toEqual({
+      imported: false,
+      alreadyImported: true,
+    });
+
+    const bootstrap = await sendRequest(ws, WS_METHODS.stateBootstrap);
+    expect(bootstrap.error).toBeUndefined();
+    const snapshot = bootstrap.result as {
+      projects: Array<{ id: string }>;
+      threads: Array<{ id: string; messages: Array<{ id: string }> }>;
+    };
+    expect(snapshot.projects).toHaveLength(1);
+    expect(snapshot.threads).toHaveLength(1);
+    expect(snapshot.threads[0]?.messages[0]?.id).toBe("msg-legacy-1");
   });
 
   it("returns unknown-session errors for checkpoint RPCs without an active provider session", async () => {

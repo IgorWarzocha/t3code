@@ -34,6 +34,7 @@
         "t3": "./dist/index.mjs",
       },
       "dependencies": {
+        "@pierre/diffs": "^1.1.0-beta.16",
         "node-pty": "^1.1.0",
         "open": "^10.1.0",
         "ws": "^8.18.0",

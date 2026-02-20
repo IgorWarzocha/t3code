@@ -8,9 +8,16 @@ import {
   useReducer,
 } from "react";
 
-import { type ProviderEvent, type ProviderSession, type TerminalEvent, normalizeProjectScripts } from "@t3tools/contracts";
-import { resolveModelSlug } from "./model-logic";
-import { hydratePersistedState, toPersistedState } from "./persistenceSchema";
+import {
+  type ProviderEvent,
+  type ProviderSession,
+  type StateBootstrapResult,
+  type StateBootstrapThread,
+  type StateEvent,
+  type TerminalEvent,
+  normalizeProjectScripts,
+} from "@t3tools/contracts";
+import { DEFAULT_MODEL, resolveModelSlug } from "./model-logic";
 import {
   applyEventToMessages,
   asObject,
@@ -34,6 +41,8 @@ import {
 // ── Actions ──────────────────────────────────────────────────────────
 
 type Action =
+  | { type: "HYDRATE_FROM_SERVER"; snapshot: StateBootstrapResult }
+  | { type: "APPLY_STATE_EVENT"; event: StateEvent }
   | { type: "ADD_PROJECT"; project: Project }
   | { type: "SET_PROJECT_SCRIPTS"; projectId: string; scripts: ProjectScript[] }
   | { type: "SYNC_PROJECTS"; projects: Project[] }
@@ -116,17 +125,7 @@ export interface AppState {
   diffFilePath: string | null;
 }
 
-const PERSISTED_STATE_KEY = "t3code:renderer-state:v7";
-const LEGACY_PERSISTED_STATE_KEYS = [
-  "t3code:renderer-state:v6",
-  "t3code:renderer-state:v5",
-  "t3code:renderer-state:v4",
-  "t3code:renderer-state:v3",
-  "codething:renderer-state:v4",
-  "codething:renderer-state:v3",
-  "codething:renderer-state:v2",
-  "codething:renderer-state:v1",
-] as const;
+const RUNTIME_MODE_STORAGE_KEY = "t3code:runtime-mode";
 
 const initialState: AppState = {
   projects: [],
@@ -145,21 +144,14 @@ function readPersistedState(): AppState {
   if (typeof window === "undefined") return initialState;
 
   try {
-    const rawCurrent = window.localStorage.getItem(PERSISTED_STATE_KEY);
-    const legacyValues = LEGACY_PERSISTED_STATE_KEYS.map((key) => window.localStorage.getItem(key));
-    const rawLegacy = legacyValues.find((value) => value !== null) ?? null;
-    const raw = rawCurrent ?? rawLegacy;
-    if (!raw) return initialState;
-    const rawCodethingV1 = window.localStorage.getItem("codething:renderer-state:v1");
-    const hydrated = hydratePersistedState(raw, !rawCurrent && raw === rawCodethingV1);
-    if (!hydrated) return initialState;
-
-    const threads = hydrated.threads.map((thread) => normalizeThreadTerminals(thread));
-
+    const rawRuntimeMode = window.localStorage.getItem(RUNTIME_MODE_STORAGE_KEY);
+    const runtimeMode =
+      rawRuntimeMode === "approval-required" || rawRuntimeMode === "full-access"
+        ? rawRuntimeMode
+        : DEFAULT_RUNTIME_MODE;
     return {
-      ...hydrated,
-      threads,
-      threadsHydrated: threads.length > 0,
+      ...initialState,
+      runtimeMode,
       diffOpen: false,
       diffThreadId: null,
       diffTurnId: null,
@@ -174,12 +166,9 @@ function persistState(state: AppState): void {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(PERSISTED_STATE_KEY, JSON.stringify(toPersistedState(state)));
-    for (const legacyKey of LEGACY_PERSISTED_STATE_KEYS) {
-      window.localStorage.removeItem(legacyKey);
-    }
+    window.localStorage.setItem(RUNTIME_MODE_STORAGE_KEY, state.runtimeMode);
   } catch {
-    // Ignore quota/storage errors to avoid breaking chat UX.
+    // Ignore storage failures to avoid breaking chat UX.
   }
 }
 
@@ -273,6 +262,58 @@ function mergeTurnDiffSummaries(
           checkpointTurnCount: inferredTurnCountByTurnId[summary.turnId],
         }),
   );
+}
+
+function hydrateThreadFromBootstrap(
+  thread: StateBootstrapThread,
+  existing: Thread | undefined,
+): Thread {
+  return normalizeThreadTerminals({
+    id: thread.id,
+    codexThreadId: thread.codexThreadId ?? null,
+    projectId: thread.projectId,
+    title: thread.title,
+    model: resolveModelSlug(thread.model),
+    terminalOpen: thread.terminalOpen,
+    terminalHeight: thread.terminalHeight,
+    terminalIds: thread.terminalIds,
+    runningTerminalIds: thread.runningTerminalIds,
+    activeTerminalId: thread.activeTerminalId,
+    terminalGroups: thread.terminalGroups,
+    activeTerminalGroupId: thread.activeTerminalGroupId,
+    session: existing?.session ?? null,
+    messages: thread.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      ...(message.attachments
+        ? { attachments: message.attachments.map((attachment) => ({ ...attachment })) }
+        : {}),
+      createdAt: message.createdAt,
+      streaming: message.streaming,
+    })),
+    events: existing?.events ?? [],
+    error: existing?.error ?? null,
+    createdAt: thread.createdAt,
+    latestTurnId: thread.latestTurnId,
+    latestTurnStartedAt: thread.latestTurnStartedAt,
+    latestTurnCompletedAt: thread.latestTurnCompletedAt,
+    latestTurnDurationMs: thread.latestTurnDurationMs,
+    lastVisitedAt: thread.lastVisitedAt ?? thread.createdAt,
+    branch: thread.branch ?? null,
+    worktreePath: thread.worktreePath ?? null,
+    turnDiffSummaries: thread.turnDiffSummaries ?? [],
+  });
+}
+
+function upsertThreadMessage(messages: Thread["messages"], message: Thread["messages"][number]) {
+  const index = messages.findIndex((entry) => entry.id === message.id);
+  if (index < 0) {
+    return [...messages, message];
+  }
+  const next = [...messages];
+  next[index] = message;
+  return next;
 }
 
 function normalizeTerminalIds(terminalIds: string[]): string[] {
@@ -548,6 +589,228 @@ function updateTurnFields(thread: Thread, event: ProviderEvent): Partial<Thread>
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
+    case "HYDRATE_FROM_SERVER": {
+      const previousProjectById = new Map(
+        state.projects.map((project) => [project.id, project] as const),
+      );
+      const nextProjects = action.snapshot.projects.map((project) => {
+        const previous = previousProjectById.get(project.id);
+        return {
+          id: project.id,
+          name: project.name,
+          cwd: project.cwd,
+          model: resolveModelSlug(previous?.model ?? DEFAULT_MODEL),
+          expanded: previous?.expanded ?? true,
+          scripts: normalizeProjectScripts(project.scripts),
+        };
+      });
+      const nextProjectIdSet = new Set(nextProjects.map((project) => project.id));
+      const previousThreadById = new Map(state.threads.map((thread) => [thread.id, thread] as const));
+      const nextThreads = action.snapshot.threads
+        .filter((thread) => nextProjectIdSet.has(thread.projectId))
+        .map((thread) => hydrateThreadFromBootstrap(thread, previousThreadById.get(thread.id)));
+      const diffState = resetDiffTargetIfMissing(state, nextThreads);
+      return {
+        ...state,
+        projects: nextProjects,
+        threads: nextThreads,
+        threadsHydrated: true,
+        ...diffState,
+      };
+    }
+
+    case "APPLY_STATE_EVENT": {
+      const payload = asObject(action.event.payload);
+      const eventType = action.event.eventType;
+
+      if (eventType === "project.upsert") {
+        const project = asObject(payload?.project);
+        const id = asString(project?.id);
+        const name = asString(project?.name);
+        const cwd = asString(project?.cwd);
+        const scripts = Array.isArray(project?.scripts) ? (project.scripts as ProjectScript[]) : [];
+        if (!id || !name || !cwd) {
+          return state;
+        }
+        const previous = state.projects.find((entry) => entry.id === id);
+        const nextProject: Project = {
+          id,
+          name,
+          cwd,
+          model: resolveModelSlug(previous?.model ?? DEFAULT_MODEL),
+          expanded: previous?.expanded ?? true,
+          scripts: normalizeProjectScripts(scripts),
+        };
+        const nextProjects = previous
+          ? state.projects.map((entry) => (entry.id === id ? nextProject : entry))
+          : [...state.projects, nextProject];
+        return {
+          ...state,
+          projects: nextProjects,
+        };
+      }
+
+      if (eventType === "project.delete") {
+        const projectId = asString(payload?.projectId) ?? action.event.entityId;
+        const projects = state.projects.filter((project) => project.id !== projectId);
+        const threads = state.threads.filter((thread) => thread.projectId !== projectId);
+        const diffState = resetDiffTargetIfMissing(state, threads);
+        return {
+          ...state,
+          projects,
+          threads,
+          ...diffState,
+        };
+      }
+
+      if (eventType === "thread.upsert") {
+        const threadPayload = asObject(payload?.thread);
+        const threadId = asString(threadPayload?.id);
+        const projectId = asString(threadPayload?.projectId);
+        if (!threadId || !projectId) {
+          return state;
+        }
+        if (!state.projects.some((project) => project.id === projectId)) {
+          return state;
+        }
+
+        const existing = state.threads.find((thread) => thread.id === threadId);
+        const existingStateMessages =
+          existing?.messages.map((message) => ({
+            id: message.id,
+            threadId,
+            role: message.role,
+            text: message.text,
+            ...(message.attachments
+              ? {
+                  attachments: message.attachments.map((attachment) => ({ ...attachment })),
+                }
+              : {}),
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+            streaming: message.streaming,
+          })) ?? [];
+        const bootstrapThread: StateBootstrapThread = {
+          ...(threadPayload as unknown as Omit<StateBootstrapThread, "messages">),
+          messages: existingStateMessages,
+          turnDiffSummaries:
+            (threadPayload?.turnDiffSummaries as Thread["turnDiffSummaries"] | undefined) ??
+            existing?.turnDiffSummaries ??
+            [],
+        };
+        const nextThread = hydrateThreadFromBootstrap(bootstrapThread, existing);
+        const nextThreads = existing
+          ? state.threads.map((thread) => (thread.id === nextThread.id ? nextThread : thread))
+          : [...state.threads, nextThread];
+        return {
+          ...state,
+          threads: nextThreads,
+        };
+      }
+
+      if (eventType === "thread.delete") {
+        const threadId = asString(payload?.threadId) ?? action.event.entityId;
+        const nextThreads = state.threads.filter((thread) => thread.id !== threadId);
+        const diffState = resetDiffTargetIfMissing(state, nextThreads);
+        return {
+          ...state,
+          threads: nextThreads,
+          ...diffState,
+        };
+      }
+
+      if (eventType === "message.upsert") {
+        const threadId = asString(payload?.threadId);
+        const messagePayload = asObject(payload?.message);
+        const messageId = asString(messagePayload?.id);
+        const role = messagePayload?.role === "assistant" ? "assistant" : "user";
+        const text = typeof messagePayload?.text === "string" ? messagePayload.text : "";
+        const createdAt = asString(messagePayload?.createdAt);
+        if (!threadId || !messageId || !createdAt) {
+          return state;
+        }
+        const attachments = Array.isArray(messagePayload?.attachments)
+          ? (messagePayload.attachments as Thread["messages"][number]["attachments"])
+          : undefined;
+        return {
+          ...state,
+          threads: updateThread(state.threads, threadId, (thread) => ({
+            ...thread,
+            messages: upsertThreadMessage(thread.messages, {
+              id: messageId,
+              role,
+              text,
+              ...(attachments ? { attachments } : {}),
+              createdAt,
+              streaming: messagePayload?.streaming === true,
+            }),
+          })),
+        };
+      }
+
+      if (eventType === "message.delete") {
+        const threadId = asString(payload?.threadId);
+        const messageId = asString(payload?.messageId);
+        if (!threadId || !messageId) {
+          return state;
+        }
+        return {
+          ...state,
+          threads: updateThread(state.threads, threadId, (thread) => ({
+            ...thread,
+            messages: thread.messages.filter((message) => message.id !== messageId),
+          })),
+        };
+      }
+
+      if (eventType === "turn_summary.upsert") {
+        const threadId = asString(payload?.threadId);
+        const summaryPayload = asObject(payload?.turnSummary);
+        const turnId = asString(summaryPayload?.turnId);
+        const completedAt = asString(summaryPayload?.completedAt);
+        if (!threadId || !turnId || !completedAt) {
+          return state;
+        }
+        const summary: Thread["turnDiffSummaries"][number] = {
+          turnId,
+          completedAt,
+          status: asString(summaryPayload?.status),
+          files: Array.isArray(summaryPayload?.files)
+            ? (summaryPayload.files as Thread["turnDiffSummaries"][number]["files"])
+            : [],
+          assistantMessageId: asString(summaryPayload?.assistantMessageId),
+          checkpointTurnCount:
+            typeof summaryPayload?.checkpointTurnCount === "number"
+              ? summaryPayload.checkpointTurnCount
+              : undefined,
+        };
+        return {
+          ...state,
+          threads: updateThread(state.threads, threadId, (thread) => ({
+            ...thread,
+            turnDiffSummaries: mergeTurnDiffSummaries(thread.turnDiffSummaries, [summary]),
+          })),
+        };
+      }
+
+      if (eventType === "turn_summary.delete") {
+        const threadId = asString(payload?.threadId);
+        const turnId = asString(payload?.turnId);
+        if (!threadId || !turnId) {
+          return state;
+        }
+        return {
+          ...state,
+          threads: updateThread(state.threads, threadId, (thread) => ({
+            ...thread,
+            turnDiffSummaries: thread.turnDiffSummaries.filter((summary) => summary.turnId !== turnId),
+          })),
+        };
+      }
+
+      return state;
+    }
+
     case "ADD_PROJECT":
       if (state.projects.some((project) => project.cwd === action.project.cwd)) {
         return state;
@@ -657,6 +920,15 @@ export function reducer(state: AppState, action: Action): AppState {
         lastVisitedAt: action.thread.lastVisitedAt ?? action.thread.createdAt,
         turnDiffSummaries: action.thread.turnDiffSummaries ?? [],
       });
+      const existingIndex = state.threads.findIndex((thread) => thread.id === nextThread.id);
+      if (existingIndex >= 0) {
+        const nextThreads = [...state.threads];
+        nextThreads[existingIndex] = nextThread;
+        return {
+          ...state,
+          threads: nextThreads,
+        };
+      }
       return {
         ...state,
         threads: [...state.threads, nextThread],
@@ -1120,7 +1392,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     persistState(state);
-  }, [state]);
+  }, [state.runtimeMode]);
 
   return createElement(StoreContext.Provider, { value: { state, dispatch } }, children);
 }

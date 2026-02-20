@@ -751,6 +751,61 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const hasReachedTerminalLimit =
     (activeThread?.terminalIds.length ?? 0) >= MAX_THREAD_TERMINAL_COUNT;
 
+  useEffect(() => {
+    if (!api || !activeThread) return;
+    void api.threads
+      .updateTitle({
+        threadId: activeThread.id,
+        title: activeThread.title,
+      })
+      .catch(() => undefined);
+  }, [activeThread?.id, activeThread?.title, api]);
+
+  useEffect(() => {
+    if (!api || !activeThread) return;
+    void api.threads
+      .updateModel({
+        threadId: activeThread.id,
+        model: activeThread.model,
+      })
+      .catch(() => undefined);
+  }, [activeThread?.id, activeThread?.model, api]);
+
+  useEffect(() => {
+    if (!api || !activeThread) return;
+    void api.threads
+      .updateBranch({
+        threadId: activeThread.id,
+        branch: activeThread.branch,
+        worktreePath: activeThread.worktreePath,
+      })
+      .catch(() => undefined);
+  }, [activeThread?.id, activeThread?.branch, activeThread?.worktreePath, api]);
+
+  useEffect(() => {
+    if (!api || !activeThread) return;
+    void api.threads
+      .updateTerminalState({
+        threadId: activeThread.id,
+        terminalOpen: activeThread.terminalOpen,
+        terminalHeight: activeThread.terminalHeight,
+        terminalIds: activeThread.terminalIds,
+        activeTerminalId: activeThread.activeTerminalId,
+        terminalGroups: activeThread.terminalGroups,
+        activeTerminalGroupId: activeThread.activeTerminalGroupId,
+      })
+      .catch(() => undefined);
+  }, [
+    activeThread?.id,
+    activeThread?.terminalOpen,
+    activeThread?.terminalHeight,
+    activeThread?.terminalIds,
+    activeThread?.activeTerminalId,
+    activeThread?.terminalGroups,
+    activeThread?.activeTerminalGroupId,
+    api,
+  ]);
+
   const revokePreviewUrls = useCallback((images: Array<{ previewUrl?: string }>) => {
     for (const image of images) {
       if (!image.previewUrl) continue;
@@ -936,7 +991,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         scripts: input.nextScripts,
       });
 
-      if (!isElectron || !api) return;
+      if (!api) return;
 
       let scriptsPersisted = false;
       try {
@@ -1512,6 +1567,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       try {
         const session = await api.providers.startSession({
           provider: "codex",
+          threadId: activeThread.id,
           cwd: cwdOverride ?? activeThread.worktreePath ?? activeProject.cwd,
           model: selectedModel || undefined,
           resumeThreadId: priorCodexThreadId ?? undefined,
@@ -1740,10 +1796,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
+    const clientMessageId = crypto.randomUUID();
     dispatch({
       type: "PUSH_USER_MESSAGE",
       threadId: activeThread.id,
-      id: crypto.randomUUID(),
+      id: clientMessageId,
       text: trimmed,
       ...(messageAttachments.length > 0 ? { attachments: messageAttachments } : {}),
     });
@@ -1783,6 +1840,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
         : trimmed || undefined;
       await api.providers.sendTurn({
         sessionId: sessionInfo.sessionId,
+        clientMessageId,
+        clientMessageText: trimmed,
         ...(input ? { input } : {}),
         ...(turnAttachments.length > 0 ? { attachments: turnAttachments } : {}),
         model: selectedModel || undefined,

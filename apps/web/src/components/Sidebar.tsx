@@ -15,7 +15,6 @@ import { gitRemoveWorktreeMutationOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { toastManager } from "./ui/toast";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
-import { createThread } from "../threadFactory";
 
 const THEME_CYCLE = { system: "light", light: "dark", dark: "system" } as const;
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
@@ -147,21 +146,56 @@ export default function Sidebar() {
         worktreePath?: string | null;
       },
     ) => {
-      const thread = createThread(projectId, {
-        model: state.projects.find((project) => project.id === projectId)?.model ?? DEFAULT_MODEL,
-        branch: options?.branch ?? null,
-        worktreePath: options?.worktreePath ?? null,
-      });
-      dispatch({
-        type: "ADD_THREAD",
-        thread,
-      });
-      void navigate({
-        to: "/$threadId",
-        params: { threadId: thread.id },
-      });
+      if (!api) return;
+      void (async () => {
+        try {
+          const result = await api.threads.create({
+            projectId,
+            model:
+              state.projects.find((project) => project.id === projectId)?.model ?? DEFAULT_MODEL,
+            branch: options?.branch ?? null,
+            worktreePath: options?.worktreePath ?? null,
+          });
+          dispatch({
+            type: "ADD_THREAD",
+            thread: {
+              id: result.thread.id,
+              codexThreadId: result.thread.codexThreadId,
+              projectId: result.thread.projectId,
+              title: result.thread.title,
+              model: result.thread.model,
+              terminalOpen: result.thread.terminalOpen,
+              terminalHeight: result.thread.terminalHeight,
+              terminalIds: result.thread.terminalIds,
+              runningTerminalIds: result.thread.runningTerminalIds,
+              activeTerminalId: result.thread.activeTerminalId,
+              terminalGroups: result.thread.terminalGroups,
+              activeTerminalGroupId: result.thread.activeTerminalGroupId,
+              session: null,
+              messages: [],
+              events: [],
+              error: null,
+              createdAt: result.thread.createdAt,
+              latestTurnId: result.thread.latestTurnId,
+              latestTurnStartedAt: result.thread.latestTurnStartedAt,
+              latestTurnCompletedAt: result.thread.latestTurnCompletedAt,
+              latestTurnDurationMs: result.thread.latestTurnDurationMs,
+              lastVisitedAt: result.thread.lastVisitedAt,
+              branch: result.thread.branch,
+              worktreePath: result.thread.worktreePath,
+              turnDiffSummaries: result.thread.turnDiffSummaries ?? [],
+            },
+          });
+          void navigate({
+            to: "/$threadId",
+            params: { threadId: result.thread.id },
+          });
+        } catch {
+          // Ignore thread creation errors here; caller surfaces project-level failures.
+        }
+      })();
     },
-    [dispatch, navigate, state.projects],
+    [api, dispatch, navigate, state.projects],
   );
 
   const focusMostRecentThreadForProject = useCallback(
@@ -190,29 +224,7 @@ export default function Sidebar() {
 
       setIsAddingProject(true);
       try {
-        if (isElectron && api) {
-          const result = await api.projects.add({ cwd });
-          const project: Project = {
-            id: result.project.id,
-            name: result.project.name,
-            cwd: result.project.cwd,
-            model: DEFAULT_MODEL,
-            expanded: true,
-            scripts: result.project.scripts,
-          };
-          const existingById = state.projects.find((p) => p.id === project.id);
-          const existingByCwd = state.projects.find((p) => p.cwd === project.cwd);
-          if (!existingById && !existingByCwd) {
-            dispatch({ type: "ADD_PROJECT", project });
-          }
-          const resolvedProjectId = existingByCwd?.id ?? project.id;
-
-          if (result.created) {
-            handleNewThread(resolvedProjectId);
-          } else {
-            focusMostRecentThreadForProject(resolvedProjectId);
-          }
-        } else {
+        if (!api) {
           const existing = state.projects.find((project) => project.cwd === cwd);
           if (existing) {
             focusMostRecentThreadForProject(existing.id);
@@ -230,6 +242,29 @@ export default function Sidebar() {
           };
           dispatch({ type: "ADD_PROJECT", project });
           handleNewThread(project.id);
+          return;
+        }
+
+        const result = await api.projects.add({ cwd });
+        const project: Project = {
+          id: result.project.id,
+          name: result.project.name,
+          cwd: result.project.cwd,
+          model: DEFAULT_MODEL,
+          expanded: true,
+          scripts: result.project.scripts,
+        };
+        const existingById = state.projects.find((p) => p.id === project.id);
+        const existingByCwd = state.projects.find((p) => p.cwd === project.cwd);
+        if (!existingById && !existingByCwd) {
+          dispatch({ type: "ADD_PROJECT", project });
+        }
+        const resolvedProjectId = existingByCwd?.id ?? project.id;
+
+        if (result.created) {
+          handleNewThread(resolvedProjectId);
+        } else {
+          focusMostRecentThreadForProject(resolvedProjectId);
         }
       } finally {
         setIsAddingProject(false);
@@ -310,6 +345,7 @@ export default function Sidebar() {
 
       const shouldNavigateToFallback = routeThreadId === threadId;
       const fallbackThreadId = state.threads.find((entry) => entry.id !== threadId)?.id ?? null;
+      void api.threads.delete({ threadId }).catch(() => undefined);
       dispatch({ type: "DELETE_THREAD", threadId });
       if (shouldNavigateToFallback) {
         if (fallbackThreadId) {

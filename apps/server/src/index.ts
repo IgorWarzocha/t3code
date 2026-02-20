@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { fixPath } from "./fixPath";
 import { createLogger } from "./logger";
-import { ProjectRegistry } from "./projectRegistry";
+import { PersistenceService } from "./persistenceService";
 import { createServer } from "./wsServer";
 
 fixPath();
@@ -45,6 +45,13 @@ function expandHomePath(input: string): string {
 function resolveStateDir(raw: string | undefined): string {
   if (!raw || raw.trim().length === 0) {
     return path.join(os.homedir(), ".t3", "userdata");
+  }
+  return path.resolve(expandHomePath(raw.trim()));
+}
+
+function resolveStateDbPath(raw: string | undefined): string {
+  if (!raw || raw.trim().length === 0) {
+    return path.join(os.homedir(), ".t3", "state.sqlite");
   }
   return path.resolve(expandHomePath(raw.trim()));
 }
@@ -101,8 +108,12 @@ async function main() {
   const requestedPort = parsePort(process.env.T3CODE_PORT);
   const port =
     requestedPort ?? (mode === "desktop" ? DEFAULT_PORT : await findAvailablePort(DEFAULT_PORT));
-  const stateDir = resolveStateDir(process.env.T3CODE_STATE_DIR);
-  const projectRegistry = new ProjectRegistry(stateDir);
+  const legacyStateDir = resolveStateDir(process.env.T3CODE_STATE_DIR);
+  const stateDbPath = resolveStateDbPath(process.env.T3CODE_STATE_DB_PATH);
+  const persistenceService = new PersistenceService({
+    dbPath: stateDbPath,
+    legacyProjectsJsonPath: path.join(legacyStateDir, "projects.json"),
+  });
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   const noBrowser = parseBooleanEnv(process.env.T3CODE_NO_BROWSER) ?? mode === "desktop";
   const authToken = process.env.T3CODE_AUTH_TOKEN;
@@ -120,7 +131,7 @@ async function main() {
     cwd,
     staticDir,
     devUrl,
-    projectRegistry,
+    persistenceService,
     authToken,
   });
   await server.start();
@@ -130,7 +141,8 @@ async function main() {
     url,
     cwd,
     mode,
-    stateDir,
+    stateDbPath,
+    legacyStateDir,
     authEnabled: Boolean(authToken),
   });
 

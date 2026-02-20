@@ -5,6 +5,10 @@ Move durable core app state out of renderer `localStorage` and into a centralize
 
 This plan preserves existing checkpoint patch storage in Git (`refs/t3/checkpoints/...`) and adds optional checkpoint diff summaries in SQLite (parsed via `@pierre/diffs`) for fast UI metadata rendering.
 
+Core migration goals:
+1. Data persistence scalability.
+2. Move as much logic and state control as possible to the server, keeping the frontend simple.
+
 ## Why This Revamp
 Current persistence is split across multiple stores:
 

@@ -25,8 +25,10 @@ describe("providerSessionStartInputSchema", () => {
 
   it("accepts optional resumeThreadId", () => {
     const parsed = providerSessionStartInputSchema.parse({
+      threadId: "thread-local-1",
       resumeThreadId: "thread_123",
     });
+    expect(parsed.threadId).toBe("thread-local-1");
     expect(parsed.resumeThreadId).toBe("thread_123");
   });
 
@@ -56,6 +58,8 @@ describe("providerSendTurnInputSchema", () => {
   it("accepts image-only turns", () => {
     const parsed = providerSendTurnInputSchema.parse({
       sessionId: "sess_1",
+      clientMessageId: "msg_1",
+      clientMessageText: "",
       attachments: [
         {
           type: "image",
@@ -67,6 +71,8 @@ describe("providerSendTurnInputSchema", () => {
       ],
     });
     expect(parsed.input).toBeUndefined();
+    expect(parsed.clientMessageId).toBe("msg_1");
+    expect(parsed.clientMessageText).toBe("");
     expect(parsed.attachments).toHaveLength(1);
   });
 

@@ -43,6 +43,24 @@ import type {
 } from "./project";
 import type { ServerConfig } from "./server";
 import type {
+  StateBootstrapResult,
+  StateCatchUpInput,
+  StateCatchUpResult,
+  StateEvent,
+  StateImportLegacyRendererStateInput,
+  StateImportLegacyRendererStateResult,
+  StateListMessagesInput,
+  StateListMessagesResult,
+  ThreadsCreateInput,
+  ThreadsDeleteInput,
+  ThreadsMarkVisitedInput,
+  ThreadsUpdateBranchInput,
+  ThreadsUpdateModelInput,
+  ThreadsUpdateResult,
+  ThreadsUpdateTerminalStateInput,
+  ThreadsUpdateTitleInput,
+} from "./state";
+import type {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
@@ -105,6 +123,25 @@ export interface NativeApi {
       input: ProviderRevertToCheckpointInput,
     ) => Promise<ProviderRevertToCheckpointResult>;
     onEvent: (callback: (event: ProviderEvent) => void) => () => void;
+  };
+  state: {
+    bootstrap: () => Promise<StateBootstrapResult>;
+    listMessages: (input: StateListMessagesInput) => Promise<StateListMessagesResult>;
+    catchUp: (input: StateCatchUpInput) => Promise<StateCatchUpResult>;
+    importLegacyRendererState: (
+      input: StateImportLegacyRendererStateInput,
+    ) => Promise<StateImportLegacyRendererStateResult>;
+    onEvent: (callback: (event: StateEvent) => void) => () => void;
+  };
+  threads: {
+    create: (input: ThreadsCreateInput) => Promise<ThreadsUpdateResult>;
+    update: (input: ThreadsUpdateTerminalStateInput) => Promise<ThreadsUpdateResult>;
+    delete: (input: ThreadsDeleteInput) => Promise<void>;
+    markVisited: (input: ThreadsMarkVisitedInput) => Promise<ThreadsUpdateResult>;
+    updateTerminalState: (input: ThreadsUpdateTerminalStateInput) => Promise<ThreadsUpdateResult>;
+    updateModel: (input: ThreadsUpdateModelInput) => Promise<ThreadsUpdateResult>;
+    updateTitle: (input: ThreadsUpdateTitleInput) => Promise<ThreadsUpdateResult>;
+    updateBranch: (input: ThreadsUpdateBranchInput) => Promise<ThreadsUpdateResult>;
   };
   projects: {
     list: () => Promise<ProjectListResult>;

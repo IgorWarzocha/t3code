@@ -18,7 +18,6 @@ import {
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
-import { ProjectRegistry } from "./projectRegistry";
 import { ProviderManager } from "./providerManager";
 import { GitManager } from "./gitManager";
 import {
@@ -33,6 +32,7 @@ import {
 import { TerminalManager } from "./terminalManager";
 import { loadResolvedKeybindingsConfig, upsertKeybindingRule } from "./keybindings";
 import { searchWorkspaceEntries } from "./workspaceEntries";
+import { PersistenceService } from "./persistenceService";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -56,7 +56,8 @@ export interface ServerOptions {
   staticDir?: string | undefined;
   devUrl?: string | undefined;
   logWebSocketEvents?: boolean | undefined;
-  projectRegistry?: ProjectRegistry | undefined;
+  persistenceService?: PersistenceService | undefined;
+  stateDbPath?: string | undefined;
   gitManager?: GitManager | undefined;
   terminalManager?: TerminalManager | undefined;
   authToken?: string | undefined;
@@ -78,15 +79,19 @@ export function createServer(options: ServerOptions) {
     staticDir,
     devUrl,
     logWebSocketEvents: explicitLogWsEvents,
-    projectRegistry: providedRegistry,
+    persistenceService: providedPersistenceService,
+    stateDbPath,
     gitManager: providedGitManager,
     terminalManager: providedTerminalManager,
     authToken,
   } = options;
-  const providerManager = new ProviderManager();
+  const persistenceService =
+    providedPersistenceService ??
+    new PersistenceService({
+      dbPath: stateDbPath ?? path.join(os.homedir(), ".t3", "state.sqlite"),
+    });
+  const providerManager = new ProviderManager({ persistenceService });
   const terminalManager = providedTerminalManager ?? new TerminalManager();
-  const projectRegistry =
-    providedRegistry ?? new ProjectRegistry(path.join(os.homedir(), ".t3", "userdata"));
   const gitManager = providedGitManager ?? new GitManager();
   const clients = new Set<WebSocket>();
   const logger = createLogger("ws");
@@ -120,6 +125,24 @@ export function createServer(options: ServerOptions) {
     }
     logOutgoingPush(push, recipients);
   });
+
+  const onStateEvent = (event: unknown) => {
+    const push: WsPush = {
+      type: "push",
+      channel: WS_CHANNELS.stateEvent,
+      data: event,
+    };
+    const message = JSON.stringify(push);
+    let recipients = 0;
+    for (const client of clients) {
+      if (client.readyState === client.OPEN) {
+        client.send(message);
+        recipients += 1;
+      }
+    }
+    logOutgoingPush(push, recipients);
+  };
+  persistenceService.on("stateEvent", onStateEvent);
 
   const onTerminalEvent = (event: TerminalEvent) => {
     const push: WsPush = {
@@ -317,22 +340,70 @@ export function createServer(options: ServerOptions) {
         return providerManager.getCheckpointDiff(request.params as never);
 
       case WS_METHODS.providersRevertToCheckpoint:
-        return providerManager.revertToCheckpoint(request.params as never);
+        {
+          const params = request.params as {
+            sessionId: string;
+            turnCount: number;
+          };
+          const result = await providerManager.revertToCheckpoint(params as never);
+          persistenceService.applyCheckpointRevert({
+            sessionId: params.sessionId,
+            runtimeThreadId: result.threadId,
+            turnCount: result.turnCount,
+            messageCount: result.messageCount,
+          });
+          return result;
+        }
+
+      case WS_METHODS.stateBootstrap:
+        return persistenceService.loadSnapshot();
+
+      case WS_METHODS.stateListMessages:
+        return persistenceService.listMessages(request.params as never);
+
+      case WS_METHODS.stateCatchUp:
+        return persistenceService.catchUp(request.params as never);
+
+      case WS_METHODS.stateImportLegacyRendererState:
+        return persistenceService.importLegacyRendererState(request.params as never);
+
+      case WS_METHODS.threadsCreate:
+        return persistenceService.createThread(request.params as never);
+
+      case WS_METHODS.threadsUpdate:
+      case WS_METHODS.threadsUpdateTerminalState:
+        return persistenceService.updateThreadTerminalState(request.params as never);
+
+      case WS_METHODS.threadsDelete:
+        persistenceService.deleteThread(request.params as never);
+        return undefined;
+
+      case WS_METHODS.threadsMarkVisited:
+        return persistenceService.markThreadVisited(request.params as never);
+
+      case WS_METHODS.threadsUpdateModel:
+        return persistenceService.updateThreadModel(request.params as never);
+
+      case WS_METHODS.threadsUpdateTitle:
+        return persistenceService.updateThreadTitle(request.params as never);
+
+      case WS_METHODS.threadsUpdateBranch:
+        return persistenceService.updateThreadBranch(request.params as never);
 
       case WS_METHODS.projectsList:
-        return projectRegistry.list();
+        return persistenceService.listProjects();
 
       case WS_METHODS.projectsAdd:
-        return projectRegistry.add(request.params as never);
+        return persistenceService.addProject(request.params as never);
 
       case WS_METHODS.projectsRemove:
-        projectRegistry.remove(request.params as never);
+        persistenceService.removeProject(request.params as never);
         return undefined;
 
       case WS_METHODS.projectsSearchEntries:
         return searchWorkspaceEntries(request.params as never);
       case WS_METHODS.projectsUpdateScripts:
-        return projectRegistry.updateScripts(request.params as never);
+        return persistenceService.updateProjectScripts(request.params as never);
 
       case WS_METHODS.shellOpenInEditor: {
         const params = request.params as {
@@ -464,9 +535,11 @@ export function createServer(options: ServerOptions) {
 
   async function stop(): Promise<void> {
     terminalManager.off("event", onTerminalEvent);
+    persistenceService.off("stateEvent", onStateEvent);
     providerManager.stopAll();
     providerManager.dispose();
     terminalManager.dispose();
+    persistenceService.close();
 
     for (const client of clients) {
       client.close();

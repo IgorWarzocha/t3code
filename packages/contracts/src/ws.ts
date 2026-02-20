@@ -3,6 +3,22 @@ import { z } from "zod";
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
 export const WS_METHODS = {
+  // State methods
+  stateBootstrap: "state.bootstrap",
+  stateListMessages: "state.listMessages",
+  stateCatchUp: "state.catchUp",
+  stateImportLegacyRendererState: "state.importLegacyRendererState",
+
+  // Thread methods
+  threadsCreate: "threads.create",
+  threadsUpdate: "threads.update",
+  threadsDelete: "threads.delete",
+  threadsMarkVisited: "threads.markVisited",
+  threadsUpdateTerminalState: "threads.updateTerminalState",
+  threadsUpdateModel: "threads.updateModel",
+  threadsUpdateTitle: "threads.updateTitle",
+  threadsUpdateBranch: "threads.updateBranch",
+
   // Provider methods (mirrors NativeApi.providers)
   providersStartSession: "providers.startSession",
   providersSendTurn: "providers.sendTurn",
@@ -52,6 +68,7 @@ export const WS_METHODS = {
 
 export const WS_CHANNELS = {
   providerEvent: "providers.event",
+  stateEvent: "state.event",
   terminalEvent: "terminal.event",
   serverWelcome: "server.welcome",
 } as const;

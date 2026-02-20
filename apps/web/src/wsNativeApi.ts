@@ -98,6 +98,26 @@ export function createWsNativeApi(): NativeApi {
       onEvent: (callback) =>
         transport.subscribe(WS_CHANNELS.providerEvent, callback as (data: unknown) => void),
     },
+    state: {
+      bootstrap: () => transport.request(WS_METHODS.stateBootstrap),
+      listMessages: (input) => transport.request(WS_METHODS.stateListMessages, input),
+      catchUp: (input) => transport.request(WS_METHODS.stateCatchUp, input),
+      importLegacyRendererState: (input) =>
+        transport.request(WS_METHODS.stateImportLegacyRendererState, input),
+      onEvent: (callback) =>
+        transport.subscribe(WS_CHANNELS.stateEvent, callback as (data: unknown) => void),
+    },
+    threads: {
+      create: (input) => transport.request(WS_METHODS.threadsCreate, input),
+      update: (input) => transport.request(WS_METHODS.threadsUpdate, input),
+      delete: (input) => transport.request(WS_METHODS.threadsDelete, input),
+      markVisited: (input) => transport.request(WS_METHODS.threadsMarkVisited, input),
+      updateTerminalState: (input) =>
+        transport.request(WS_METHODS.threadsUpdateTerminalState, input),
+      updateModel: (input) => transport.request(WS_METHODS.threadsUpdateModel, input),
+      updateTitle: (input) => transport.request(WS_METHODS.threadsUpdateTitle, input),
+      updateBranch: (input) => transport.request(WS_METHODS.threadsUpdateBranch, input),
+    },
     projects: {
       list: () => transport.request(WS_METHODS.projectsList),
       add: (input) => transport.request(WS_METHODS.projectsAdd, input),

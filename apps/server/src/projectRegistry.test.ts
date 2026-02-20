@@ -57,6 +57,8 @@ describe("ProjectRegistry scripts", () => {
     expect(listed[0]?.scripts).toHaveLength(2);
     expect(listed[0]?.scripts[0]?.id).toBe("run");
     expect(listed[0]?.scripts[1]?.id).toBe("setup");
+    registry.close();
+    reloaded.close();
   });
 
   it("deduplicates script ids and allows only one setup script", () => {
@@ -97,6 +99,7 @@ describe("ProjectRegistry scripts", () => {
     expect(updated.project.scripts[0]?.runOnWorktreeCreate).toBe(true);
     expect(updated.project.scripts[1]?.id).toBe("another");
     expect(updated.project.scripts[1]?.runOnWorktreeCreate).toBe(false);
+    registry.close();
   });
 
   it("throws when updating scripts for an unknown project id", () => {
@@ -109,5 +112,6 @@ describe("ProjectRegistry scripts", () => {
         scripts: [],
       }),
     ).toThrowError("Project not found");
+    registry.close();
   });
 });
