@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import type { ProviderEvent } from "@t3tools/contracts";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import { Button } from "../components/ui/button";
@@ -120,6 +121,14 @@ function errorDetails(error: unknown): string {
   }
 }
 
+function readProviderSeq(event: ProviderEvent): number | null {
+  const seq = event.seq;
+  if (typeof seq !== "number" || !Number.isInteger(seq) || seq <= 0) {
+    return null;
+  }
+  return seq;
+}
+
 function StateSyncRouter() {
   const api = useNativeApi();
   const { dispatch } = useStore();
@@ -131,6 +140,8 @@ function StateSyncRouter() {
   });
   const lastStateSeqRef = useRef(0);
   const stateQueueRef = useRef(Promise.resolve());
+  const lastProviderSeqRef = useRef(0);
+  const providerQueueRef = useRef(Promise.resolve());
 
   useEffect(() => {
     if (!api) return;
@@ -202,7 +213,7 @@ function StateSyncRouter() {
 
   useEffect(() => {
     if (!api) return;
-    return api.providers.onEvent((event) => {
+    const applyProviderEvent = (event: ProviderEvent) => {
       if (event.method === "turn/completed") {
         void invalidateGitQueries(queryClient);
       }
@@ -217,14 +228,73 @@ function StateSyncRouter() {
           },
         });
       }
-      if (!activeThreadId) return;
       dispatch({
         type: "APPLY_EVENT",
         event,
         activeAssistantItemRef,
         activeThreadId,
       });
+    };
+
+    const replayProviderCatchUp = async (): Promise<void> => {
+      const catchUp = await api.providers.catchUp({
+        afterSeq: lastProviderSeqRef.current,
+      });
+      if (catchUp.events.length === 0) {
+        lastProviderSeqRef.current = Math.max(lastProviderSeqRef.current, catchUp.lastProviderSeq);
+        return;
+      }
+
+      for (const missingEvent of catchUp.events) {
+        const missingSeq = readProviderSeq(missingEvent);
+        if (!missingSeq || missingSeq <= lastProviderSeqRef.current) continue;
+        applyProviderEvent(missingEvent);
+        lastProviderSeqRef.current = missingSeq;
+      }
+
+      if (lastProviderSeqRef.current < catchUp.lastProviderSeq) {
+        await replayProviderCatchUp();
+      }
+    };
+
+    const enqueueProviderWork = (work: () => Promise<void>) => {
+      providerQueueRef.current = providerQueueRef.current.then(work).catch(() => undefined);
+    };
+
+    const unsubscribeWelcome = onServerWelcome(() => {
+      if (lastProviderSeqRef.current <= 0) {
+        return;
+      }
+      enqueueProviderWork(async () => {
+        await replayProviderCatchUp();
+      });
     });
+
+    const unsubscribeProvider = api.providers.onEvent((event) => {
+      enqueueProviderWork(async () => {
+        const eventSeq = readProviderSeq(event);
+        if (!eventSeq) {
+          applyProviderEvent(event);
+          return;
+        }
+        if (eventSeq <= lastProviderSeqRef.current) {
+          return;
+        }
+        if (lastProviderSeqRef.current > 0 && eventSeq > lastProviderSeqRef.current + 1) {
+          await replayProviderCatchUp();
+        }
+        if (eventSeq <= lastProviderSeqRef.current) {
+          return;
+        }
+        applyProviderEvent(event);
+        lastProviderSeqRef.current = eventSeq;
+      });
+    });
+
+    return () => {
+      unsubscribeWelcome();
+      unsubscribeProvider();
+    };
   }, [activeThreadId, api, dispatch, queryClient]);
 
   useEffect(() => {

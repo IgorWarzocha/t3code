@@ -170,6 +170,11 @@ export const providerGetCheckpointDiffResultSchema = z.object({
   diff: z.string(),
 });
 
+export const providerCatchUpInputSchema = z.object({
+  afterSeq: z.number().int().min(0).default(0),
+  limit: z.number().int().min(1).max(5_000).default(1_000),
+});
+
 export const providerRespondToRequestInputSchema = z.object({
   sessionId: z.string().min(1),
   requestId: z.string().min(1),
@@ -179,6 +184,7 @@ export const providerRespondToRequestInputSchema = z.object({
 export const providerEventKindSchema = z.enum(["session", "notification", "request", "error"]);
 
 export const providerEventSchema = z.object({
+  seq: z.number().int().positive().optional(),
   id: z.string().min(1),
   kind: providerEventKindSchema,
   provider: providerKindSchema,
@@ -193,6 +199,11 @@ export const providerEventSchema = z.object({
   requestKind: providerRequestKindSchema.optional(),
   textDelta: z.string().optional(),
   payload: z.unknown().optional(),
+});
+
+export const providerCatchUpResultSchema = z.object({
+  events: z.array(providerEventSchema),
+  lastProviderSeq: z.number().int().min(0),
 });
 
 export type ProviderKind = z.infer<typeof providerKindSchema>;
@@ -219,6 +230,8 @@ export type ProviderRevertToCheckpointResult = z.infer<
 >;
 export type ProviderGetCheckpointDiffInput = z.input<typeof providerGetCheckpointDiffInputSchema>;
 export type ProviderGetCheckpointDiffResult = z.infer<typeof providerGetCheckpointDiffResultSchema>;
+export type ProviderCatchUpInput = z.input<typeof providerCatchUpInputSchema>;
+export type ProviderCatchUpResult = z.infer<typeof providerCatchUpResultSchema>;
 export type ProviderRespondToRequestInput = z.input<typeof providerRespondToRequestInputSchema>;
 export type ProviderEventKind = z.infer<typeof providerEventKindSchema>;
 export type ProviderEvent = z.infer<typeof providerEventSchema>;

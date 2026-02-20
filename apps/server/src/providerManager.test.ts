@@ -3,6 +3,58 @@ import { describe, expect, it, vi } from "vitest";
 import { ProviderManager } from "./providerManager";
 
 describe("ProviderManager", () => {
+  it("emits persisted provider events with durable sequence metadata when available", () => {
+    const ingestProviderEvent = vi.fn((event: {
+      id: string;
+      kind: "notification";
+      provider: "codex";
+      sessionId: string;
+      createdAt: string;
+      method: string;
+      threadId: string;
+    }) => ({
+      ...event,
+      seq: 11,
+    }));
+    const persistenceService = {
+      ingestProviderEvent,
+      unbindSession: vi.fn(),
+    };
+    const manager = new ProviderManager({
+      persistenceService: persistenceService as never,
+    });
+    const events: Array<{ id: string; seq?: number }> = [];
+    manager.on("event", (event) => {
+      events.push({ id: event.id, seq: event.seq });
+    });
+
+    const internals = manager as unknown as {
+      onCodexEvent: (event: {
+        id: string;
+        kind: "notification";
+        provider: "codex";
+        sessionId: string;
+        createdAt: string;
+        method: string;
+        threadId: string;
+      }) => void;
+    };
+
+    internals.onCodexEvent({
+      id: "evt-seq-1",
+      kind: "notification",
+      provider: "codex",
+      sessionId: "sess-1",
+      createdAt: new Date().toISOString(),
+      method: "turn/started",
+      threadId: "thread-1",
+    });
+
+    expect(ingestProviderEvent).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([{ id: "evt-seq-1", seq: 11 }]);
+    manager.dispose();
+  });
+
   it("detaches provider event listener and ends thread log streams on dispose", () => {
     const manager = new ProviderManager();
     const internals = manager as unknown as {

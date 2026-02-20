@@ -16,6 +16,8 @@ import {
   type ProjectRemoveInput,
   type ProjectUpdateScriptsInput,
   type ProjectUpdateScriptsResult,
+  type ProviderCatchUpInput,
+  type ProviderCatchUpResult,
   type ProviderEvent,
   type ProviderSendTurnInput,
   type StateBootstrapResult,
@@ -44,6 +46,9 @@ import {
   projectRemoveInputSchema,
   projectScriptsSchema,
   projectUpdateScriptsInputSchema,
+  providerCatchUpInputSchema,
+  providerCatchUpResultSchema,
+  providerEventSchema,
   stateBootstrapResultSchema,
   stateCatchUpInputSchema,
   stateCatchUpResultSchema,
@@ -94,6 +99,25 @@ interface StateEventRow {
 interface ProviderEventInsertResult {
   inserted: boolean;
   runtimeThreadId: string | null;
+  seq: number;
+}
+
+interface ProviderEventRow {
+  seq: number;
+  id: string;
+  session_id: string;
+  provider: string;
+  kind: string;
+  method: string;
+  thread_id: string | null;
+  turn_id: string | null;
+  item_id: string | null;
+  request_id: string | null;
+  request_kind: string | null;
+  text_delta: string | null;
+  message: string | null;
+  payload_json: string | null;
+  created_at: string;
 }
 
 export interface PersistenceServiceOptions {
@@ -772,6 +796,43 @@ export class PersistenceService extends EventEmitter<PersistenceServiceEvents> {
     });
   }
 
+  providerCatchUp(raw: ProviderCatchUpInput): ProviderCatchUpResult {
+    const input = providerCatchUpInputSchema.parse(raw);
+    const rows = this.db
+      .prepare(
+        `SELECT
+          seq,
+          id,
+          session_id,
+          provider,
+          kind,
+          method,
+          thread_id,
+          turn_id,
+          item_id,
+          request_id,
+          request_kind,
+          text_delta,
+          message,
+          payload_json,
+          created_at
+        FROM provider_events
+        WHERE seq > ?
+        ORDER BY seq ASC
+        LIMIT ?;`,
+      )
+      .all(input.afterSeq, input.limit) as unknown as ProviderEventRow[];
+
+    const events = rows
+      .map((row) => this.parseProviderEventRow(row))
+      .filter((event): event is ProviderEvent => event !== null);
+
+    return providerCatchUpResultSchema.parse({
+      events,
+      lastProviderSeq: this.readLastProviderSeq(),
+    });
+  }
+
   listMessages(raw: StateListMessagesInput): StateListMessagesResult {
     const input = stateListMessagesInputSchema.parse(raw);
     const rows = this.db
@@ -867,12 +928,18 @@ export class PersistenceService extends EventEmitter<PersistenceServiceEvents> {
     });
   }
 
-  ingestProviderEvent(event: ProviderEvent): void {
+  ingestProviderEvent(event: ProviderEvent): ProviderEvent | null {
+    let persistedEvent: ProviderEvent | null = null;
     this.withTransaction((pendingEvents) => {
       const insertResult = this.insertProviderEvent(event);
       if (!insertResult.inserted) {
         return;
       }
+      persistedEvent = providerEventSchema.parse({
+        ...event,
+        seq: insertResult.seq,
+        ...(insertResult.runtimeThreadId ? { threadId: insertResult.runtimeThreadId } : {}),
+      });
 
       const localThreadId = this.resolveThreadIdForEvent(event, insertResult.runtimeThreadId);
       if (!localThreadId) {
@@ -1138,6 +1205,7 @@ export class PersistenceService extends EventEmitter<PersistenceServiceEvents> {
         }
       }
     });
+    return persistedEvent;
   }
 
   persistTurnDiffSummaryFromCheckpoint(input: {
@@ -1356,6 +1424,13 @@ export class PersistenceService extends EventEmitter<PersistenceServiceEvents> {
   private readLastStateSeq(): number {
     const row = this.db
       .prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM state_events;")
+      .get() as { seq: number } | undefined;
+    return row?.seq ?? 0;
+  }
+
+  private readLastProviderSeq(): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM provider_events;")
       .get() as { seq: number } | undefined;
     return row?.seq ?? 0;
   }
@@ -1766,11 +1841,38 @@ export class PersistenceService extends EventEmitter<PersistenceServiceEvents> {
         event.message ?? null,
         payloadJson,
         event.createdAt,
-      ) as { changes?: number | bigint };
+      ) as { changes?: number | bigint; lastInsertRowid?: number | bigint };
+    const inserted = toSafeInteger(result.changes, 0) > 0;
     return {
-      inserted: toSafeInteger(result.changes, 0) > 0,
+      inserted,
       runtimeThreadId: runtimeThreadId ?? null,
+      seq: inserted ? toSafeInteger(result.lastInsertRowid, 0) : 0,
     };
+  }
+
+  private parseProviderEventRow(row: ProviderEventRow): ProviderEvent | null {
+    const payload = row.payload_json ? this.tryParseJson(row.payload_json) : undefined;
+    const parsed = providerEventSchema.safeParse({
+      seq: row.seq,
+      id: row.id,
+      kind: row.kind,
+      provider: row.provider,
+      sessionId: row.session_id,
+      createdAt: row.created_at,
+      method: row.method,
+      ...(row.thread_id ? { threadId: row.thread_id } : {}),
+      ...(row.turn_id ? { turnId: row.turn_id } : {}),
+      ...(row.item_id ? { itemId: row.item_id } : {}),
+      ...(row.request_id ? { requestId: row.request_id } : {}),
+      ...(row.request_kind ? { requestKind: row.request_kind } : {}),
+      ...(row.text_delta !== null ? { textDelta: row.text_delta } : {}),
+      ...(row.message ? { message: row.message } : {}),
+      ...(payload !== undefined ? { payload } : {}),
+    });
+    if (!parsed.success) {
+      return null;
+    }
+    return parsed.data;
   }
 
   private parseJson<T>(json: string, schema: SafeParseSchema<T>): T | null {

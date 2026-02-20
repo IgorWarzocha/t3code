@@ -334,6 +334,9 @@ export function createServer(options: ServerOptions) {
       case WS_METHODS.providersListSessions:
         return providerManager.listSessions();
 
+      case WS_METHODS.providersCatchUp:
+        return persistenceService.providerCatchUp(request.params as never);
+
       case WS_METHODS.providersListCheckpoints:
         return providerManager.listCheckpoints(request.params as never);
 

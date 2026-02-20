@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  providerCatchUpInputSchema,
+  providerCatchUpResultSchema,
   providerCheckpointSchema,
   providerEventSchema,
   providerGetCheckpointDiffInputSchema,
@@ -156,6 +158,19 @@ describe("providerEventSchema", () => {
     expect(parsed.method).toBe("item/agentMessage/delta");
   });
 
+  it("accepts optional durable sequence metadata", () => {
+    const parsed = providerEventSchema.parse({
+      seq: 42,
+      id: "evt_seq_1",
+      kind: "notification",
+      provider: "codex",
+      sessionId: "sess_1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      method: "turn/completed",
+    });
+    expect(parsed.seq).toBe(42);
+  });
+
   it("accepts request approval metadata", () => {
     const parsed = providerEventSchema.parse({
       id: "evt_2",
@@ -169,6 +184,33 @@ describe("providerEventSchema", () => {
     });
     expect(parsed.requestId).toBe("req_123");
     expect(parsed.requestKind).toBe("command");
+  });
+});
+
+describe("provider catch-up schemas", () => {
+  it("parses catch-up input defaults", () => {
+    const parsed = providerCatchUpInputSchema.parse({});
+    expect(parsed.afterSeq).toBe(0);
+    expect(parsed.limit).toBe(1_000);
+  });
+
+  it("parses catch-up result payload", () => {
+    const parsed = providerCatchUpResultSchema.parse({
+      events: [
+        {
+          seq: 7,
+          id: "evt_7",
+          kind: "notification",
+          provider: "codex",
+          sessionId: "sess_1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "turn/started",
+        },
+      ],
+      lastProviderSeq: 9,
+    });
+    expect(parsed.events[0]?.seq).toBe(7);
+    expect(parsed.lastProviderSeq).toBe(9);
   });
 });
 

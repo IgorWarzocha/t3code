@@ -17,6 +17,8 @@ import type {
   GitStatusResult,
 } from "./git";
 import type {
+  ProviderCatchUpInput,
+  ProviderCatchUpResult,
   ProviderEvent,
   ProviderGetCheckpointDiffInput,
   ProviderGetCheckpointDiffResult,
@@ -118,6 +120,7 @@ export interface NativeApi {
     getCheckpointDiff: (
       input: ProviderGetCheckpointDiffInput,
     ) => Promise<ProviderGetCheckpointDiffResult>;
+    catchUp: (input: ProviderCatchUpInput) => Promise<ProviderCatchUpResult>;
     revertToCheckpoint: (
       input: ProviderRevertToCheckpointInput,
     ) => Promise<ProviderRevertToCheckpointResult>;

@@ -180,18 +180,11 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
     if (this.disposed) {
       return;
     }
-
-    this.routeEventToThreadLog(event);
-    try {
-      this.persistenceService?.ingestProviderEvent(event);
-    } catch {
-      // Persistence failures should not break provider streaming.
+    const emittedEvent = this.publishProviderEvent(event);
+    if (!emittedEvent) {
+      return;
     }
-    if (event.method === "session/closed" || event.method === "session/exited") {
-      this.persistenceService?.unbindSession(event.sessionId);
-    }
-    this.emit("event", event);
-    this.maybeCaptureFilesystemCheckpoint(event);
+    this.maybeCaptureFilesystemCheckpoint(emittedEvent);
   };
 
   constructor(options: ProviderManagerOptions = {}) {
@@ -546,7 +539,7 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
   }
 
   private emitCheckpointCaptured(sessionId: string, threadId: string, turnCount: number): void {
-    this.emit("event", {
+    this.publishProviderEvent({
       id: randomUUID(),
       kind: "notification",
       provider: "codex",
@@ -566,7 +559,7 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
     message: string,
     threadId?: string,
   ): void {
-    this.emit("event", {
+    this.publishProviderEvent({
       id: randomUUID(),
       kind: "error",
       provider: "codex",
@@ -576,6 +569,26 @@ export class ProviderManager extends EventEmitter<ProviderManagerEvents> {
       message,
       ...(threadId ? { threadId } : {}),
     });
+  }
+
+  private publishProviderEvent(event: ProviderEvent): ProviderEvent | null {
+    let emittedEvent = event;
+    try {
+      const persistedEvent = this.persistenceService?.ingestProviderEvent(event);
+      if (this.persistenceService && !persistedEvent) {
+        return null;
+      }
+      emittedEvent = persistedEvent ?? event;
+    } catch {
+      // Persistence failures should not break provider streaming.
+    }
+
+    this.routeEventToThreadLog(emittedEvent);
+    if (emittedEvent.method === "session/closed" || emittedEvent.method === "session/exited") {
+      this.persistenceService?.unbindSession(emittedEvent.sessionId);
+    }
+    this.emit("event", emittedEvent);
+    return emittedEvent;
   }
 
   private withFilesystemLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {

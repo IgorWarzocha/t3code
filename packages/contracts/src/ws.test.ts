@@ -7,4 +7,8 @@ describe("WS thread methods", () => {
     expect(WS_METHODS.threadsUpdateTerminalState).toBe("threads.updateTerminalState");
     expect("threadsUpdate" in WS_METHODS).toBe(false);
   });
+
+  it("includes provider catch-up method for durable stream resume", () => {
+    expect(WS_METHODS.providersCatchUp).toBe("providers.catchUp");
+  });
 });

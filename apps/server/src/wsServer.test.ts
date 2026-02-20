@@ -669,6 +669,58 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual([]);
   });
 
+  it("returns durable provider catch-up events ordered by seq", async () => {
+    const stateDir = makeTempDir("t3code-ws-provider-catchup-");
+    const persistenceService = new PersistenceService({
+      dbPath: path.join(stateDir, "state.sqlite"),
+      legacyProjectsJsonPath: path.join(stateDir, "projects.json"),
+    });
+
+    const first = persistenceService.ingestProviderEvent({
+      id: "provider-evt-1",
+      kind: "notification",
+      provider: "codex",
+      sessionId: "sess-1",
+      createdAt: "2026-02-20T00:00:00.000Z",
+      method: "turn/started",
+      turnId: "turn-1",
+      payload: { turn: { id: "turn-1" } },
+    });
+    const second = persistenceService.ingestProviderEvent({
+      id: "provider-evt-2",
+      kind: "notification",
+      provider: "codex",
+      sessionId: "sess-1",
+      createdAt: "2026-02-20T00:00:01.000Z",
+      method: "turn/completed",
+      turnId: "turn-1",
+      payload: { turn: { id: "turn-1", status: "completed" } },
+    });
+
+    server = createTestServer({ cwd: "/test", stateDir, persistenceService });
+    await server.start();
+    const addr = server.httpServer.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+    await waitForMessage(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.providersCatchUp, {
+      afterSeq: first?.seq ?? 0,
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({
+      events: [
+        expect.objectContaining({
+          id: "provider-evt-2",
+          seq: second?.seq,
+        }),
+      ],
+      lastProviderSeq: second?.seq ?? 0,
+    });
+  });
+
   it("persists app settings through appSettings RPC methods", async () => {
     const stateDir = makeTempDir("t3code-ws-app-settings-");
     server = createTestServer({ cwd: "/test", stateDir });

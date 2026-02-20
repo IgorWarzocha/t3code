@@ -102,7 +102,7 @@ describe("PersistenceService", () => {
         sessionId: "sess-1",
       };
 
-      service.ingestProviderEvent({
+      const event1 = service.ingestProviderEvent({
         ...baseEvent,
         id: "evt-1",
         createdAt: iso(10),
@@ -115,8 +115,9 @@ describe("PersistenceService", () => {
           },
         },
       });
+      expect(event1?.seq).toBeGreaterThan(0);
 
-      service.ingestProviderEvent({
+      const event2 = service.ingestProviderEvent({
         ...baseEvent,
         id: "evt-2",
         createdAt: iso(20),
@@ -128,8 +129,9 @@ describe("PersistenceService", () => {
           delta: "hi",
         },
       });
+      expect((event2?.seq ?? 0) > (event1?.seq ?? 0)).toBe(true);
 
-      service.ingestProviderEvent({
+      const event3 = service.ingestProviderEvent({
         ...baseEvent,
         id: "evt-3",
         createdAt: iso(30),
@@ -142,8 +144,9 @@ describe("PersistenceService", () => {
           },
         },
       });
+      expect((event3?.seq ?? 0) > (event2?.seq ?? 0)).toBe(true);
 
-      service.ingestProviderEvent({
+      const event4 = service.ingestProviderEvent({
         ...baseEvent,
         id: "evt-4",
         createdAt: iso(40),
@@ -156,6 +159,7 @@ describe("PersistenceService", () => {
           },
         },
       });
+      expect((event4?.seq ?? 0) > (event3?.seq ?? 0)).toBe(true);
 
       const snapshot = service.loadSnapshot();
       expect(snapshot.projects).toHaveLength(1);
@@ -179,6 +183,24 @@ describe("PersistenceService", () => {
       expect(catchUp.events.some((event) => event.eventType === "project.upsert")).toBe(true);
       expect(catchUp.events.some((event) => event.eventType === "thread.upsert")).toBe(true);
       expect(catchUp.events.some((event) => event.eventType === "message.upsert")).toBe(true);
+
+      const providerCatchUp = service.providerCatchUp({ afterSeq: 0 });
+      expect(providerCatchUp.lastProviderSeq).toBe(event4?.seq ?? 0);
+      expect(providerCatchUp.events.map((event) => event.id)).toEqual([
+        "evt-1",
+        "evt-2",
+        "evt-3",
+        "evt-4",
+      ]);
+      const providerSeqs = providerCatchUp.events.map((event) => event.seq ?? 0);
+      for (let index = 1; index < providerSeqs.length; index += 1) {
+        expect(providerSeqs[index]).toBeGreaterThan(providerSeqs[index - 1] ?? Number.NEGATIVE_INFINITY);
+      }
+
+      const providerCatchUpAfterSecond = service.providerCatchUp({
+        afterSeq: event2?.seq ?? 0,
+      });
+      expect(providerCatchUpAfterSecond.events.map((event) => event.id)).toEqual(["evt-3", "evt-4"]);
     } finally {
       service.close();
     }
