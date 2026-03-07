@@ -1,10 +1,13 @@
 import {
   CODEX_REASONING_EFFORT_OPTIONS,
+  DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
   MODEL_OPTIONS_BY_PROVIDER,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
+  PI_THINKING_LEVEL_OPTIONS,
   type CodexReasoningEffort,
   type ModelSlug,
+  type PiThinkingLevel,
   type ProviderKind,
 } from "@t3tools/contracts";
 
@@ -12,7 +15,19 @@ type CatalogProvider = keyof typeof MODEL_OPTIONS_BY_PROVIDER;
 
 const MODEL_SLUG_SET_BY_PROVIDER: Record<CatalogProvider, ReadonlySet<ModelSlug>> = {
   codex: new Set(MODEL_OPTIONS_BY_PROVIDER.codex.map((option) => option.slug)),
+  pi: new Set(MODEL_OPTIONS_BY_PROVIDER.pi.map((option) => option.slug)),
 };
+
+function supportsOpaqueModels(provider: ProviderKind): boolean {
+  return provider === "pi";
+}
+
+function isOpaqueProviderModel(
+  provider: ProviderKind,
+  model: ModelSlug,
+): boolean {
+  return supportsOpaqueModels(provider) && model.includes("/");
+}
 
 export function getModelOptions(provider: ProviderKind = "codex") {
   return MODEL_OPTIONS_BY_PROVIDER[provider];
@@ -49,9 +64,11 @@ export function resolveModelSlug(
     return getDefaultModel(provider);
   }
 
-  return MODEL_SLUG_SET_BY_PROVIDER[provider].has(normalized)
-    ? normalized
-    : getDefaultModel(provider);
+  if (MODEL_SLUG_SET_BY_PROVIDER[provider].has(normalized)) {
+    return normalized;
+  }
+
+  return isOpaqueProviderModel(provider, normalized) ? normalized : getDefaultModel(provider);
 }
 
 export function resolveModelSlugForProvider(
@@ -72,7 +89,26 @@ export function getDefaultReasoningEffort(provider: ProviderKind): CodexReasonin
 export function getDefaultReasoningEffort(
   provider: ProviderKind = "codex",
 ): CodexReasoningEffort | null {
-  return provider === "codex" ? "high" : null;
+  return DEFAULT_REASONING_EFFORT_BY_PROVIDER[provider];
+}
+
+export function getPiThinkingLevelOptions(): ReadonlyArray<PiThinkingLevel> {
+  return PI_THINKING_LEVEL_OPTIONS;
+}
+
+export function normalizePiThinkingLevel(
+  value: string | null | undefined,
+): PiThinkingLevel | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return PI_THINKING_LEVEL_OPTIONS.find((option) => option === trimmed) ?? null;
 }
 
 export { CODEX_REASONING_EFFORT_OPTIONS };

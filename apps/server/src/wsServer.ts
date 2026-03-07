@@ -54,6 +54,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import { ProviderModelCatalog } from "./provider/Services/ProviderModelCatalog";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors } from "./open";
@@ -208,7 +209,8 @@ export type ServerCoreRuntimeServices =
   | CheckpointDiffQuery
   | OrchestrationReactor
   | ProviderService
-  | ProviderHealth;
+  | ProviderHealth
+  | ProviderModelCatalog;
 
 export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
@@ -254,6 +256,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const terminalManager = yield* TerminalManager;
   const keybindingsManager = yield* Keybindings;
   const providerHealth = yield* ProviderHealth;
+  const providerModelCatalog = yield* ProviderModelCatalog;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -268,7 +271,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     ),
   );
 
-  const providerStatuses = yield* providerHealth.getStatuses;
+  const providerStatuses = yield* providerHealth.getStatuses();
 
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
@@ -876,16 +879,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* terminalManager.close(body);
       }
 
-      case WS_METHODS.serverGetConfig:
+      case WS_METHODS.serverGetConfig: {
+        const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         return {
           cwd,
           keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
-          providers: providerStatuses,
+          providers: yield* providerHealth.getStatuses(
+            body.providerOptions ? { providerOptions: body.providerOptions } : undefined,
+          ),
           availableEditors,
         };
+      }
+
+      case WS_METHODS.serverGetProviderModels: {
+        const body = stripRequestTag(request.body);
+        return yield* providerModelCatalog.getCatalog({
+          ...(body.provider ? { provider: body.provider } : {}),
+          ...(body.providerOptions ? { providerOptions: body.providerOptions } : {}),
+        });
+      }
 
       case WS_METHODS.serverUpsertKeybinding: {
         const body = stripRequestTag(request.body);

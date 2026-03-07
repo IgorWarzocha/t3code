@@ -1,6 +1,11 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { Option, Schema } from "effect";
-import { type ProviderKind, type ProviderServiceTier } from "@t3tools/contracts";
+import type {
+  ProviderKind,
+  ProviderServiceTier,
+  ServerProviderModel,
+  ServerProviderModelCatalog,
+} from "@t3tools/contracts";
 import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
@@ -28,6 +33,7 @@ const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
 const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
+  pi: new Set(getModelOptions("pi").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
@@ -35,6 +41,12 @@ const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some("")),
   ),
   codexHomePath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  piBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  piAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
@@ -45,6 +57,9 @@ const AppSettingsSchema = Schema.Struct({
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
+  customPiModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
 export interface AppModelOption {
@@ -52,6 +67,8 @@ export interface AppModelOption {
   name: string;
   isCustom: boolean;
 }
+
+type DiscoveredModel = Pick<ServerProviderModel, "slug" | "name">;
 
 export function resolveAppServiceTier(serviceTier: AppServiceTier): ProviderServiceTier | null {
   return serviceTier === "auto" ? null : serviceTier;
@@ -61,7 +78,7 @@ export function shouldShowFastTierIcon(
   model: string | null | undefined,
   serviceTier: AppServiceTier,
 ): boolean {
-  const normalizedModel = normalizeModelSlug(model);
+  const normalizedModel = normalizeModelSlug(model, "codex");
   return (
     resolveAppServiceTier(serviceTier) === "fast" &&
     normalizedModel !== null &&
@@ -74,6 +91,14 @@ const DEFAULT_APP_SETTINGS = AppSettingsSchema.makeUnsafe({});
 let listeners: Array<() => void> = [];
 let cachedRawSettings: string | null | undefined;
 let cachedSnapshot: AppSettings = DEFAULT_APP_SETTINGS;
+
+function isValidCustomModelSlug(provider: ProviderKind, model: string): boolean {
+  if (provider !== "pi") {
+    return true;
+  }
+  const slashIndex = model.indexOf("/");
+  return slashIndex > 0 && slashIndex < model.length - 1;
+}
 
 export function normalizeCustomModelSlugs(
   models: Iterable<string | null | undefined>,
@@ -88,6 +113,7 @@ export function normalizeCustomModelSlugs(
     if (
       !normalized ||
       normalized.length > MAX_CUSTOM_MODEL_LENGTH ||
+      !isValidCustomModelSlug(provider, normalized) ||
       builtInModelSlugs.has(normalized) ||
       seen.has(normalized)
     ) {
@@ -108,15 +134,31 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
   };
+}
+
+export function getCustomModelsForProvider(
+  settings: Pick<AppSettings, "customCodexModels" | "customPiModels">,
+  provider: ProviderKind,
+): readonly string[] {
+  switch (provider) {
+    case "pi":
+      return settings.customPiModels;
+    case "codex":
+    default:
+      return settings.customCodexModels;
+  }
 }
 
 export function getAppModelOptions(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel?: string | null,
+  discoveredModels: readonly DiscoveredModel[] = [],
 ): AppModelOption[] {
-  const options: AppModelOption[] = getModelOptions(provider).map(({ slug, name }) => ({
+  const baseOptionsSource = provider === "pi" ? discoveredModels : getModelOptions(provider);
+  const options: AppModelOption[] = baseOptionsSource.map(({ slug, name }) => ({
     slug,
     name,
     isCustom: false,
@@ -152,8 +194,10 @@ export function resolveAppModelSelection(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel: string | null | undefined,
+  discoveredModels: readonly DiscoveredModel[] = [],
+  fallbackModel?: string | null,
 ): string {
-  const options = getAppModelOptions(provider, customModels, selectedModel);
+  const options = getAppModelOptions(provider, customModels, selectedModel, discoveredModels);
   const trimmedSelectedModel = selectedModel?.trim();
   if (trimmedSelectedModel) {
     const direct = options.find((option) => option.slug === trimmedSelectedModel);
@@ -171,7 +215,12 @@ export function resolveAppModelSelection(
 
   const normalizedSelectedModel = normalizeModelSlug(selectedModel, provider);
   if (!normalizedSelectedModel) {
-    return getDefaultModel(provider);
+    const normalizedFallbackModel = normalizeModelSlug(fallbackModel, provider);
+    if (normalizedFallbackModel) {
+      return normalizedFallbackModel;
+    }
+    const firstOption = options[0]?.slug;
+    return firstOption ?? getDefaultModel(provider);
   }
 
   return (
@@ -185,9 +234,10 @@ export function getSlashModelOptions(
   customModels: readonly string[],
   query: string,
   selectedModel?: string | null,
+  discoveredModels: readonly DiscoveredModel[] = [],
 ): AppModelOption[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const options = getAppModelOptions(provider, customModels, selectedModel);
+  const options = getAppModelOptions(provider, customModels, selectedModel, discoveredModels);
   if (!normalizedQuery) {
     return options;
   }
@@ -197,6 +247,20 @@ export function getSlashModelOptions(
     const searchName = option.name.toLowerCase();
     return searchSlug.includes(normalizedQuery) || searchName.includes(normalizedQuery);
   });
+}
+
+export function getDiscoveredModelsForProvider(
+  catalog: ServerProviderModelCatalog | undefined,
+  provider: ProviderKind,
+): readonly DiscoveredModel[] {
+  return catalog?.[provider]?.models ?? [];
+}
+
+export function getDiscoveredDefaultModelForProvider(
+  catalog: ServerProviderModelCatalog | undefined,
+  provider: ProviderKind,
+): string | null {
+  return catalog?.[provider]?.defaultModel ?? null;
 }
 
 function emitChange(): void {

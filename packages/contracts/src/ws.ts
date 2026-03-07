@@ -30,6 +30,7 @@ import {
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
 import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
+import { ServerGetConfigInput, ServerGetProviderModelsInput } from "./server";
 import { OpenInEditorInput } from "./editor";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
@@ -66,6 +67,7 @@ export const WS_METHODS = {
 
   // Server meta
   serverGetConfig: "server.getConfig",
+  serverGetProviderModels: "server.getProviderModels",
   serverUpsertKeybinding: "server.upsertKeybinding",
 } as const;
 
@@ -127,7 +129,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.terminalClose, TerminalCloseInput),
 
   // Server meta
-  tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverGetConfig, ServerGetConfigInput),
+  tagRequestBody(WS_METHODS.serverGetProviderModels, ServerGetProviderModelsInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
 ]);
 

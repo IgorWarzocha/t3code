@@ -243,7 +243,7 @@ function EventRouter() {
       }
       lastConfigIssuesSignatureRef.current = signature;
 
-      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.configAll });
       const issue = payload.issues.find((entry) => entry.kind.startsWith("keybindings."));
       if (!issue) {
         toastManager.add({

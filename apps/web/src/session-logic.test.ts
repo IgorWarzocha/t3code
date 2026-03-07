@@ -5,6 +5,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   PROVIDER_OPTIONS,
+  resolveProviderOptions,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveTimelineEntries,
@@ -640,14 +641,21 @@ describe("deriveActiveWorkStartedAt", () => {
 });
 
 describe("PROVIDER_OPTIONS", () => {
-  it("keeps Claude Code and Cursor visible as unavailable placeholders in the stack base", () => {
+  it("keeps Pi, Claude Code, and Cursor unavailable until runtime health enables them", () => {
     const claude = PROVIDER_OPTIONS.find((option) => option.value === "claudeCode");
     const cursor = PROVIDER_OPTIONS.find((option) => option.value === "cursor");
+    const pi = PROVIDER_OPTIONS.find((option) => option.value === "pi");
     expect(PROVIDER_OPTIONS).toEqual([
       { value: "codex", label: "Codex", available: true },
+      { value: "pi", label: "Pi", available: false },
       { value: "claudeCode", label: "Claude Code", available: false },
       { value: "cursor", label: "Cursor", available: false },
     ]);
+    expect(pi).toEqual({
+      value: "pi",
+      label: "Pi",
+      available: false,
+    });
     expect(claude).toEqual({
       value: "claudeCode",
       label: "Claude Code",
@@ -658,5 +666,24 @@ describe("PROVIDER_OPTIONS", () => {
       label: "Cursor",
       available: false,
     });
+  });
+});
+
+describe("resolveProviderOptions", () => {
+  it("enables Pi only when the server reports it as available", () => {
+    expect(resolveProviderOptions([])).toEqual(PROVIDER_OPTIONS);
+    expect(
+      resolveProviderOptions([
+        {
+          provider: "pi",
+          available: true,
+        },
+      ]),
+    ).toEqual([
+      { value: "codex", label: "Codex", available: true },
+      { value: "pi", label: "Pi", available: true },
+      { value: "claudeCode", label: "Claude Code", available: false },
+      { value: "cursor", label: "Cursor", available: false },
+    ]);
   });
 });

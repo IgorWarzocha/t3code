@@ -6,6 +6,7 @@ import {
   type KeybindingCommand,
   type CodexReasoningEffort,
   type MessageId,
+  type PiThinkingLevel,
   type ProjectId,
   type ProjectEntry,
   type ProjectScript,
@@ -14,8 +15,10 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
+  type ServerProviderModelCatalog,
   type ServerProviderStatus,
   type ProviderKind,
+  type ProviderStartOptions,
   type ThreadId,
   type TurnId,
   OrchestrationThreadActivity,
@@ -24,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 import {
   getDefaultModel,
+  getPiThinkingLevelOptions,
   getDefaultReasoningEffort,
   getReasoningEffortOptions,
   normalizeModelSlug,
@@ -49,7 +53,11 @@ import {
 } from "@tanstack/react-virtual";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
-import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import {
+  serverConfigQueryOptions,
+  serverProviderModelsQueryOptions,
+  serverQueryKeys,
+} from "~/lib/serverReactQuery";
 
 import { isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
@@ -73,7 +81,7 @@ import {
   type PendingApproval,
   type PendingUserInput,
   type ProviderPickerKind,
-  PROVIDER_OPTIONS,
+  resolveProviderOptions,
   deriveWorkLogEntries,
   hasToolActivityForTurn,
   isLatestTurnSettled,
@@ -168,6 +176,7 @@ import {
   Icon,
   OpenAI,
   OpenCodeIcon,
+  PiIcon,
   VisualStudioCode,
   Zed,
 } from "./Icons";
@@ -199,6 +208,9 @@ import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
+  getDiscoveredDefaultModelForProvider,
+  getDiscoveredModelsForProvider,
+  getCustomModelsForProvider,
   getAppModelOptions,
   resolveAppModelSelection,
   resolveAppServiceTier,
@@ -618,6 +630,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const setComposerDraftEffort = useComposerDraftStore((store) => store.setEffort);
   const setComposerDraftCodexFastMode = useComposerDraftStore((store) => store.setCodexFastMode);
+  const setComposerDraftPiThinkingLevel = useComposerDraftStore(
+    (store) => store.setPiThinkingLevel,
+  );
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
@@ -793,17 +808,34 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeThread.messages.length > 0 ||
       activeThread.session !== null),
   );
+  const providerStartOptions = useMemo(() => buildProviderStartOptions(settings), [settings]);
   const selectedServiceTierSetting = settings.codexServiceTier;
   const selectedServiceTier = resolveAppServiceTier(selectedServiceTierSetting);
   const lockedProvider: ProviderKind | null = hasThreadStarted
     ? (sessionProvider ?? selectedProviderByThreadId ?? null)
     : null;
   const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "codex";
+  const providerModelsQuery = useQuery(
+    serverProviderModelsQueryOptions(selectedProvider, providerStartOptions),
+  );
+  const providerModels = providerModelsQuery.data;
+  const customModelsForSelectedProvider = getCustomModelsForProvider(settings, selectedProvider);
+  const discoveredModelsForSelectedProvider = getDiscoveredModelsForProvider(
+    providerModels,
+    selectedProvider,
+  );
+  const discoveredDefaultModelForSelectedProvider = getDiscoveredDefaultModelForProvider(
+    providerModels,
+    selectedProvider,
+  );
   const baseThreadModel = resolveModelSlugForProvider(
     selectedProvider,
-    activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider),
+    activeThread?.model ??
+      (activeThread && selectedProvider !== sessionProvider ? null : activeProject?.model) ??
+      discoveredDefaultModelForSelectedProvider ??
+      discoveredModelsForSelectedProvider[0]?.slug ??
+      getDefaultModel(selectedProvider),
   );
-  const customModelsForSelectedProvider = settings.customCodexModels;
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
@@ -813,27 +845,52 @@ export default function ChatView({ threadId }: ChatViewProps) {
       selectedProvider,
       customModelsForSelectedProvider,
       draftModel,
+      discoveredModelsForSelectedProvider,
+      discoveredDefaultModelForSelectedProvider,
     ) as ModelSlug;
-  }, [baseThreadModel, composerDraft.model, customModelsForSelectedProvider, selectedProvider]);
+  }, [
+    baseThreadModel,
+    composerDraft.model,
+    customModelsForSelectedProvider,
+    discoveredDefaultModelForSelectedProvider,
+    discoveredModelsForSelectedProvider,
+    selectedProvider,
+  ]);
   const reasoningOptions = getReasoningEffortOptions(selectedProvider);
   const supportsReasoningEffort = reasoningOptions.length > 0;
   const selectedEffort = composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
   const selectedCodexFastModeEnabled =
     selectedProvider === "codex" ? composerDraft.codexFastMode : false;
+  const piThinkingLevelOptions = getPiThinkingLevelOptions();
+  const selectedPiThinkingLevel =
+    selectedProvider === "pi" ? composerDraft.piThinkingLevel : null;
   const selectedModelOptionsForDispatch = useMemo(() => {
-    if (selectedProvider !== "codex") {
-      return undefined;
+    if (selectedProvider === "codex") {
+      const codexOptions = {
+        ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
+        ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
+      };
+      return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
     }
-    const codexOptions = {
-      ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
-      ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
-    };
-    return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
-  }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
+    if (selectedProvider === "pi" && selectedPiThinkingLevel) {
+      return {
+        pi: {
+          thinkingLevel: selectedPiThinkingLevel,
+        },
+      };
+    }
+    return undefined;
+  }, [
+    selectedCodexFastModeEnabled,
+    selectedEffort,
+    selectedPiThinkingLevel,
+    selectedProvider,
+    supportsReasoningEffort,
+  ]);
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
-    () => getCustomModelOptionsByProvider(settings),
-    [settings],
+    () => getCustomModelOptionsByProvider(settings, providerModels),
+    [providerModels, settings],
   );
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByProvider[selectedProvider];
@@ -841,23 +898,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
-  const searchableModelOptions = useMemo(
-    () =>
-      AVAILABLE_PROVIDER_OPTIONS.filter(
-        (option) => lockedProvider === null || option.value === lockedProvider,
-      ).flatMap((option) =>
-        modelOptionsByProvider[option.value].map(({ slug, name }) => ({
-          provider: option.value,
-          providerLabel: option.label,
-          slug,
-          name,
-          searchSlug: slug.toLowerCase(),
-          searchName: name.toLowerCase(),
-          searchProvider: option.label.toLowerCase(),
-        })),
-      ),
-    [lockedProvider, modelOptionsByProvider],
-  );
   const phase = derivePhase(activeThread?.session ?? null);
   const isSendBusy = sendPhase !== "idle";
   const isPreparingWorktree = sendPhase === "preparing-worktree";
@@ -1180,7 +1220,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const branchesQuery = useQuery(gitBranchesQueryOptions(gitCwd));
-  const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const serverConfigQuery = useQuery(serverConfigQueryOptions(providerStartOptions));
   const workspaceEntriesQuery = useQuery(
     projectSearchEntriesQueryOptions({
       cwd: gitCwd,
@@ -1190,6 +1230,43 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }),
   );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
+  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
+  const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
+  const providerOptions = useMemo(
+    () => resolveProviderOptions(providerStatuses),
+    [providerStatuses],
+  );
+  const availableProviderOptions = useMemo(
+    () =>
+      providerOptions.filter(
+        (
+          option,
+        ): option is {
+          value: ProviderKind;
+          label: string;
+          available: true;
+        } => option.available && option.value !== "claudeCode" && option.value !== "cursor",
+      ),
+    [providerOptions],
+  );
+  const searchableModelOptions = useMemo(
+    () =>
+      availableProviderOptions.filter(
+        (option) => lockedProvider === null || option.value === lockedProvider,
+      ).flatMap((option) =>
+        modelOptionsByProvider[option.value].map(({ slug, name }) => ({
+          provider: option.value,
+          providerLabel: option.label,
+          slug,
+          name,
+          searchSlug: slug.toLowerCase(),
+          searchName: name.toLowerCase(),
+          searchProvider: option.label.toLowerCase(),
+        })),
+      ),
+    [availableProviderOptions, lockedProvider, modelOptionsByProvider],
+  );
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -1270,9 +1347,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => new Set(nonPersistedComposerImageIds),
     [nonPersistedComposerImageIds],
   );
-  const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
-  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
-  const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
   const activeProvider = activeThread?.session?.provider ?? "codex";
   const activeProviderStatus = useMemo(
     () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
@@ -1613,6 +1687,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
+      if (selectedProvider === "pi" && mode !== "full-access") {
+        scheduleComposerFocus();
+        return;
+      }
       if (mode === runtimeMode) return;
       setComposerDraftRuntimeMode(threadId, mode);
       if (isLocalDraftThread) {
@@ -1623,6 +1701,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [
       isLocalDraftThread,
       runtimeMode,
+      selectedProvider,
       scheduleComposerFocus,
       setComposerDraftRuntimeMode,
       setDraftThreadContext,
@@ -2626,6 +2705,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ...(selectedModelOptionsForDispatch
           ? { modelOptions: selectedModelOptionsForDispatch }
           : {}),
+        ...(providerStartOptions ? { providerOptions: providerStartOptions } : {}),
         provider: selectedProvider,
         assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
         runtimeMode,
@@ -2903,6 +2983,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
+          ...(providerStartOptions ? { providerOptions: providerStartOptions } : {}),
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
@@ -2930,6 +3011,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       isServerThread,
       persistThreadSettingsForNextTurn,
       resetSendPhase,
+      providerStartOptions,
       runtimeMode,
       selectedModel,
       selectedModelOptionsForDispatch,
@@ -3003,6 +3085,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
+          ...(providerStartOptions ? { providerOptions: providerStartOptions } : {}),
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode,
           interactionMode: "default",
@@ -3048,6 +3131,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
+    providerStartOptions,
     resetSendPhase,
     runtimeMode,
     selectedModel,
@@ -3067,17 +3151,33 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(
         activeThread.id,
-        resolveAppModelSelection(provider, settings.customCodexModels, model),
+        resolveAppModelSelection(
+          provider,
+          getCustomModelsForProvider(settings, provider),
+          model,
+          getDiscoveredModelsForProvider(providerModels, provider),
+          getDiscoveredDefaultModelForProvider(providerModels, provider),
+        ),
       );
+      if (provider === "pi") {
+        setComposerDraftRuntimeMode(activeThread.id, "full-access");
+        if (isLocalDraftThread) {
+          setDraftThreadContext(activeThread.id, { runtimeMode: "full-access" });
+        }
+      }
       scheduleComposerFocus();
     },
     [
       activeThread,
+      isLocalDraftThread,
       lockedProvider,
+      providerModels,
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
-      settings.customCodexModels,
+      setComposerDraftRuntimeMode,
+      setDraftThreadContext,
+      settings,
     ],
   );
   const onEffortSelect = useCallback(
@@ -3093,6 +3193,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
       scheduleComposerFocus();
     },
     [scheduleComposerFocus, setComposerDraftCodexFastMode, threadId],
+  );
+  const onPiThinkingLevelChange = useCallback(
+    (thinkingLevel: PiThinkingLevel | null) => {
+      setComposerDraftPiThinkingLevel(threadId, thinkingLevel);
+      scheduleComposerFocus();
+    },
+    [scheduleComposerFocus, setComposerDraftPiThinkingLevel, threadId],
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
@@ -3628,6 +3735,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     provider={selectedProvider}
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
+                    providerOptions={providerOptions}
+                    providerStartOptions={providerStartOptions}
+                    customPiModels={settings.customPiModels}
                     modelOptionsByProvider={modelOptionsByProvider}
                     serviceTierSetting={selectedServiceTierSetting}
                     onProviderModelChange={onProviderModelSelect}
@@ -3642,6 +3752,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         options={reasoningOptions}
                         onEffortChange={onEffortSelect}
                         onFastModeChange={onCodexFastModeChange}
+                      />
+                    </>
+                  ) : null}
+
+                  {selectedProvider === "pi" ? (
+                    <>
+                      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+                      <PiTraitsPicker
+                        thinkingLevel={selectedPiThinkingLevel}
+                        options={piThinkingLevelOptions}
+                        onThinkingLevelChange={onPiThinkingLevelChange}
                       />
                     </>
                   ) : null}
@@ -3677,15 +3798,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
                     size="sm"
                     type="button"
+                    disabled={selectedProvider === "pi"}
                     onClick={() =>
                       void handleRuntimeModeChange(
                         runtimeMode === "full-access" ? "approval-required" : "full-access",
                       )
                     }
                     title={
-                      runtimeMode === "full-access"
-                        ? "Full access — click to require approvals"
-                        : "Approval required — click for full access"
+                      selectedProvider === "pi"
+                        ? "Pi currently requires full access"
+                        : runtimeMode === "full-access"
+                          ? "Full access — click to require approvals"
+                          : "Approval required — click for full access"
                     }
                   >
                     {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
@@ -5280,16 +5404,6 @@ const MessagesTimeline = memo(function MessagesTimeline({
   );
 });
 
-function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
-  value: ProviderKind;
-  label: string;
-  available: true;
-} {
-  return option.available && option.value !== "claudeCode";
-}
-
-const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);
-const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter((option) => !option.available);
 const COMING_SOON_PROVIDER_OPTIONS = [
   { id: "opencode", label: "OpenCode", icon: OpenCodeIcon },
   { id: "gemini", label: "Gemini", icon: Gemini },
@@ -5297,14 +5411,63 @@ const COMING_SOON_PROVIDER_OPTIONS = [
 
 function getCustomModelOptionsByProvider(settings: {
   customCodexModels: readonly string[];
-}): Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>> {
+  customPiModels: readonly string[];
+}, discoveredModels: ServerProviderModelCatalog | undefined): Record<
+  ProviderKind,
+  ReadonlyArray<{ slug: string; name: string }>
+> {
   return {
-    codex: getAppModelOptions("codex", settings.customCodexModels),
+    codex: getAppModelOptions(
+      "codex",
+      settings.customCodexModels,
+      undefined,
+      getDiscoveredModelsForProvider(discoveredModels, "codex"),
+    ),
+    pi: getAppModelOptions(
+      "pi",
+      settings.customPiModels,
+      undefined,
+      getDiscoveredModelsForProvider(discoveredModels, "pi"),
+    ),
   };
+}
+
+function buildProviderStartOptions(settings: {
+  codexBinaryPath: string;
+  codexHomePath: string;
+  piBinaryPath: string;
+  piAgentDir: string;
+}): ProviderStartOptions | undefined {
+  const codexBinaryPath = settings.codexBinaryPath.trim();
+  const codexHomePath = settings.codexHomePath.trim();
+  const piBinaryPath = settings.piBinaryPath.trim();
+  const piAgentDir = settings.piAgentDir.trim();
+
+  const providerOptions: ProviderStartOptions = {
+    ...(codexBinaryPath || codexHomePath
+      ? {
+          codex: {
+            ...(codexBinaryPath ? { binaryPath: codexBinaryPath } : {}),
+            ...(codexHomePath ? { homePath: codexHomePath } : {}),
+          },
+        }
+      : {}),
+    ...(piBinaryPath || piAgentDir
+      ? {
+          pi: {
+            ...(piBinaryPath ? { binaryPath: piBinaryPath } : {}),
+            ...(piAgentDir ? { agentDir: piAgentDir } : {}),
+          },
+        }
+      : {}),
+  };
+
+  return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
 }
 
 const PROVIDER_ICON_BY_PROVIDER: Record<ProviderPickerKind, Icon> = {
   codex: OpenAI,
+  pi: PiIcon,
   claudeCode: ClaudeAI,
   cursor: CursorIcon,
 };
@@ -5346,13 +5509,46 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   provider: ProviderKind;
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
+  providerStartOptions: ProviderStartOptions | undefined;
+  customPiModels: readonly string[];
+  providerOptions: ReadonlyArray<{
+    value: ProviderPickerKind;
+    label: string;
+    available: boolean;
+  }>;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
   serviceTierSetting: AppServiceTier;
   disabled?: boolean;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const selectedProviderOptions = props.modelOptionsByProvider[props.provider];
+  const piProviderModelsQuery = useQuery({
+    ...serverProviderModelsQueryOptions("pi", props.providerStartOptions),
+    enabled: isMenuOpen || props.provider === "pi",
+  });
+  const effectiveModelOptionsByProvider = useMemo(() => {
+    const discoveredPiModels = getDiscoveredModelsForProvider(piProviderModelsQuery.data, "pi");
+    if (discoveredPiModels.length === 0) {
+      return props.modelOptionsByProvider;
+    }
+
+    return {
+      ...props.modelOptionsByProvider,
+      pi: getAppModelOptions(
+        "pi",
+        props.customPiModels,
+        props.provider === "pi" ? props.model : undefined,
+        discoveredPiModels,
+      ),
+    } satisfies Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
+  }, [
+    piProviderModelsQuery.data,
+    props.customPiModels,
+    props.model,
+    props.modelOptionsByProvider,
+    props.provider,
+  ]);
+  const selectedProviderOptions = effectiveModelOptionsByProvider[props.provider];
   const selectedModelLabel =
     selectedProviderOptions.find((option) => option.slug === props.model)?.name ?? props.model;
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.provider];
@@ -5380,7 +5576,8 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground/70" />
-          {props.provider === "codex" && shouldShowFastTierIcon(props.model, props.serviceTierSetting) ? (
+          {props.provider === "codex" &&
+          shouldShowFastTierIcon(props.model, props.serviceTierSetting) ? (
             <ZapIcon className="size-3.5 shrink-0 text-amber-500" />
           ) : null}
           <span className="truncate">{selectedModelLabel}</span>
@@ -5388,7 +5585,17 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         </span>
       </MenuTrigger>
       <MenuPopup align="start">
-        {AVAILABLE_PROVIDER_OPTIONS.map((option) => {
+        {props.providerOptions
+          .filter(
+            (
+              option,
+            ): option is {
+              value: ProviderKind;
+              label: string;
+              available: true;
+            } => option.available && option.value !== "claudeCode" && option.value !== "cursor",
+          )
+          .map((option) => {
           const OptionIcon = PROVIDER_ICON_BY_PROVIDER[option.value];
           const isDisabledByProviderLock =
             props.lockedProvider !== null && props.lockedProvider !== option.value;
@@ -5412,14 +5619,14 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                       const resolvedModel = resolveModelForProviderPicker(
                         option.value,
                         value,
-                        props.modelOptionsByProvider[option.value],
+                        effectiveModelOptionsByProvider[option.value],
                       );
                       if (!resolvedModel) return;
                       props.onProviderModelChange(option.value, resolvedModel);
                       setIsMenuOpen(false);
                     }}
                   >
-                    {props.modelOptionsByProvider[option.value].map((modelOption) => (
+                    {effectiveModelOptionsByProvider[option.value].map((modelOption) => (
                       <MenuRadioItem
                         key={`${option.value}:${modelOption.slug}`}
                         value={modelOption.slug}
@@ -5433,14 +5640,18 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                       </MenuRadioItem>
                     ))}
                   </MenuRadioGroup>
+                  {effectiveModelOptionsByProvider[option.value].length === 0 ? (
+                    <MenuItem disabled>No models available</MenuItem>
+                  ) : null}
                 </MenuGroup>
               </MenuSubPopup>
             </MenuSub>
           );
         })}
-        {UNAVAILABLE_PROVIDER_OPTIONS.length > 0 && <MenuDivider />}
-        {UNAVAILABLE_PROVIDER_OPTIONS.map((option) => {
+        {props.providerOptions.some((option) => !option.available) && <MenuDivider />}
+        {props.providerOptions.filter((option) => !option.available).map((option) => {
           const OptionIcon = PROVIDER_ICON_BY_PROVIDER[option.value];
+          const isComingSoon = option.value === "claudeCode" || option.value === "cursor";
           return (
             <MenuItem key={option.value} disabled>
               <OptionIcon
@@ -5452,12 +5663,12 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               />
               <span>{option.label}</span>
               <span className="ms-auto text-[11px] text-muted-foreground/80 uppercase tracking-[0.08em]">
-                Coming soon
+                {isComingSoon ? "Coming soon" : "Unavailable"}
               </span>
             </MenuItem>
           );
         })}
-        {UNAVAILABLE_PROVIDER_OPTIONS.length === 0 && <MenuDivider />}
+        {!props.providerOptions.some((option) => !option.available) && <MenuDivider />}
         {COMING_SOON_PROVIDER_OPTIONS.map((option) => {
           const OptionIcon = option.icon;
           return (
@@ -5547,6 +5758,67 @@ const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
           >
             <MenuRadioItem value="off">off</MenuRadioItem>
             <MenuRadioItem value="on">on</MenuRadioItem>
+          </MenuRadioGroup>
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+});
+
+const PiTraitsPicker = memo(function PiTraitsPicker(props: {
+  thinkingLevel: PiThinkingLevel | null;
+  options: ReadonlyArray<PiThinkingLevel>;
+  onThinkingLevelChange: (thinkingLevel: PiThinkingLevel | null) => void;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const thinkingLabelByOption: Record<PiThinkingLevel, string> = {
+    off: "Off",
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra High",
+  };
+  const triggerLabel = props.thinkingLevel
+    ? `Thinking · ${thinkingLabelByOption[props.thinkingLevel]}`
+    : "Thinking";
+
+  return (
+    <Menu
+      open={isMenuOpen}
+      onOpenChange={(open) => {
+        setIsMenuOpen(open);
+      }}
+    >
+      <MenuTrigger
+        render={
+          <Button
+            size="sm"
+            variant="ghost"
+            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+          />
+        }
+      >
+        <span>{triggerLabel}</span>
+        <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        <MenuGroup>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Thinking</div>
+          <MenuRadioGroup
+            value={props.thinkingLevel ?? ""}
+            onValueChange={(value) => {
+              if (!value) return;
+              const nextThinkingLevel = props.options.find((option) => option === value);
+              if (!nextThinkingLevel) return;
+              props.onThinkingLevelChange(nextThinkingLevel);
+            }}
+          >
+            {props.options.map((thinkingLevel) => (
+              <MenuRadioItem key={thinkingLevel} value={thinkingLevel}>
+                {thinkingLabelByOption[thinkingLevel]}
+              </MenuRadioItem>
+            ))}
           </MenuRadioGroup>
         </MenuGroup>
       </MenuPopup>
