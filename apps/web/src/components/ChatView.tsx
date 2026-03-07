@@ -16,6 +16,7 @@ import {
   type ProviderApprovalDecision,
   type ServerProviderStatus,
   type ProviderKind,
+  type ProviderStartOptions,
   type ThreadId,
   type TurnId,
   OrchestrationThreadActivity,
@@ -168,6 +169,7 @@ import {
   Icon,
   OpenAI,
   OpenCodeIcon,
+  PiIcon,
   VisualStudioCode,
   Zed,
 } from "./Icons";
@@ -199,6 +201,7 @@ import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
+  getCustomModelsForProvider,
   getAppModelOptions,
   resolveAppModelSelection,
   resolveAppServiceTier,
@@ -793,6 +796,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeThread.messages.length > 0 ||
       activeThread.session !== null),
   );
+  const providerStartOptions = useMemo(() => buildProviderStartOptions(settings), [settings]);
   const selectedServiceTierSetting = settings.codexServiceTier;
   const selectedServiceTier = resolveAppServiceTier(selectedServiceTierSetting);
   const lockedProvider: ProviderKind | null = hasThreadStarted
@@ -801,9 +805,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "codex";
   const baseThreadModel = resolveModelSlugForProvider(
     selectedProvider,
-    activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider),
+    activeThread?.model ??
+      (activeThread && selectedProvider !== sessionProvider ? null : activeProject?.model) ??
+      getDefaultModel(selectedProvider),
   );
-  const customModelsForSelectedProvider = settings.customCodexModels;
+  const customModelsForSelectedProvider = getCustomModelsForProvider(settings, selectedProvider);
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
@@ -2626,6 +2632,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ...(selectedModelOptionsForDispatch
           ? { modelOptions: selectedModelOptionsForDispatch }
           : {}),
+        ...(providerStartOptions ? { providerOptions: providerStartOptions } : {}),
         provider: selectedProvider,
         assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
         runtimeMode,
@@ -2903,6 +2910,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
+          ...(providerStartOptions ? { providerOptions: providerStartOptions } : {}),
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
@@ -2930,6 +2938,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       isServerThread,
       persistThreadSettingsForNextTurn,
       resetSendPhase,
+      providerStartOptions,
       runtimeMode,
       selectedModel,
       selectedModelOptionsForDispatch,
@@ -3003,6 +3012,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
+          ...(providerStartOptions ? { providerOptions: providerStartOptions } : {}),
           assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
           runtimeMode,
           interactionMode: "default",
@@ -3048,6 +3058,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
+    providerStartOptions,
     resetSendPhase,
     runtimeMode,
     selectedModel,
@@ -3067,7 +3078,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(
         activeThread.id,
-        resolveAppModelSelection(provider, settings.customCodexModels, model),
+        resolveAppModelSelection(provider, getCustomModelsForProvider(settings, provider), model),
       );
       scheduleComposerFocus();
     },
@@ -3077,7 +3088,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
-      settings.customCodexModels,
+      settings,
     ],
   );
   const onEffortSelect = useCallback(
@@ -5297,14 +5308,50 @@ const COMING_SOON_PROVIDER_OPTIONS = [
 
 function getCustomModelOptionsByProvider(settings: {
   customCodexModels: readonly string[];
+  customPiModels: readonly string[];
 }): Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>> {
   return {
     codex: getAppModelOptions("codex", settings.customCodexModels),
+    pi: getAppModelOptions("pi", settings.customPiModels),
   };
+}
+
+function buildProviderStartOptions(settings: {
+  codexBinaryPath: string;
+  codexHomePath: string;
+  piBinaryPath: string;
+  piAgentDir: string;
+}): ProviderStartOptions | undefined {
+  const codexBinaryPath = settings.codexBinaryPath.trim();
+  const codexHomePath = settings.codexHomePath.trim();
+  const piBinaryPath = settings.piBinaryPath.trim();
+  const piAgentDir = settings.piAgentDir.trim();
+
+  const providerOptions: ProviderStartOptions = {
+    ...(codexBinaryPath || codexHomePath
+      ? {
+          codex: {
+            ...(codexBinaryPath ? { binaryPath: codexBinaryPath } : {}),
+            ...(codexHomePath ? { homePath: codexHomePath } : {}),
+          },
+        }
+      : {}),
+    ...(piBinaryPath || piAgentDir
+      ? {
+          pi: {
+            ...(piBinaryPath ? { binaryPath: piBinaryPath } : {}),
+            ...(piAgentDir ? { agentDir: piAgentDir } : {}),
+          },
+        }
+      : {}),
+  };
+
+  return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
 }
 
 const PROVIDER_ICON_BY_PROVIDER: Record<ProviderPickerKind, Icon> = {
   codex: OpenAI,
+  pi: PiIcon,
   claudeCode: ClaudeAI,
   cursor: CursorIcon,
 };

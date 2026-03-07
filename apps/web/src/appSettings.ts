@@ -28,6 +28,7 @@ const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
 const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
+  pi: new Set(getModelOptions("pi").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
@@ -37,12 +38,21 @@ const AppSettingsSchema = Schema.Struct({
   codexHomePath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
+  piBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
+  piAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(
+    Schema.withConstructorDefault(() => Option.some("")),
+  ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
   enableAssistantStreaming: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
   codexServiceTier: AppServiceTierSchema.pipe(Schema.withConstructorDefault(() => Option.some("auto"))),
   customCodexModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  customPiModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
 });
@@ -61,7 +71,7 @@ export function shouldShowFastTierIcon(
   model: string | null | undefined,
   serviceTier: AppServiceTier,
 ): boolean {
-  const normalizedModel = normalizeModelSlug(model);
+  const normalizedModel = normalizeModelSlug(model, "codex");
   return (
     resolveAppServiceTier(serviceTier) === "fast" &&
     normalizedModel !== null &&
@@ -108,7 +118,21 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
   };
+}
+
+export function getCustomModelsForProvider(
+  settings: Pick<AppSettings, "customCodexModels" | "customPiModels">,
+  provider: ProviderKind,
+): readonly string[] {
+  switch (provider) {
+    case "pi":
+      return settings.customPiModels;
+    case "codex":
+    default:
+      return settings.customCodexModels;
+  }
 }
 
 export function getAppModelOptions(

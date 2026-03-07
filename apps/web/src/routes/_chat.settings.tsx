@@ -7,6 +7,7 @@ import { ZapIcon } from "lucide-react";
 
 import {
   APP_SERVICE_TIER_OPTIONS,
+  getCustomModelsForProvider,
   MAX_CUSTOM_MODEL_LENGTH,
   shouldShowFastTierIcon,
   useAppSettings,
@@ -54,24 +55,22 @@ const MODEL_PROVIDER_SETTINGS: Array<{
     placeholder: "your-codex-model-slug",
     example: "gpt-6.7-codex-ultra-preview",
   },
+  {
+    provider: "pi",
+    title: "Pi",
+    description: "Save Pi model ids for the picker and existing `/model` command flow.",
+    placeholder: "provider/model-id",
+    example: "anthropic/claude-sonnet-4-20250514",
+  },
 ] as const;
-
-function getCustomModelsForProvider(
-  settings: ReturnType<typeof useAppSettings>["settings"],
-  provider: ProviderKind,
-) {
-  switch (provider) {
-    case "codex":
-    default:
-      return settings.customCodexModels;
-  }
-}
 
 function getDefaultCustomModelsForProvider(
   defaults: ReturnType<typeof useAppSettings>["defaults"],
   provider: ProviderKind,
 ) {
   switch (provider) {
+    case "pi":
+      return defaults.customPiModels;
     case "codex":
     default:
       return defaults.customCodexModels;
@@ -80,6 +79,8 @@ function getDefaultCustomModelsForProvider(
 
 function patchCustomModels(provider: ProviderKind, models: string[]) {
   switch (provider) {
+    case "pi":
+      return { customPiModels: models };
     case "codex":
     default:
       return { customCodexModels: models };
@@ -96,6 +97,7 @@ function SettingsRouteView() {
     Record<ProviderKind, string>
   >({
     codex: "",
+    pi: "",
   });
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
@@ -103,6 +105,8 @@ function SettingsRouteView() {
 
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
+  const piBinaryPath = settings.piBinaryPath;
+  const piAgentDir = settings.piAgentDir;
   const codexServiceTier = settings.codexServiceTier;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
 
@@ -295,6 +299,64 @@ function SettingsRouteView() {
                     }
                   >
                     Reset codex overrides
+                  </Button>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Pi</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  These overrides apply to new Pi sessions and let you point T3 Code at a custom Pi install.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <label htmlFor="pi-binary-path" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Pi binary path</span>
+                  <Input
+                    id="pi-binary-path"
+                    value={piBinaryPath}
+                    onChange={(event) => updateSettings({ piBinaryPath: event.target.value })}
+                    placeholder="pi"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Leave blank to use <code>pi</code> from your PATH.
+                  </span>
+                </label>
+
+                <label htmlFor="pi-agent-dir" className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Pi agent/config dir</span>
+                  <Input
+                    id="pi-agent-dir"
+                    value={piAgentDir}
+                    onChange={(event) => updateSettings({ piAgentDir: event.target.value })}
+                    placeholder="/Users/you/.pi"
+                    spellCheck={false}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Optional custom Pi config directory or workspace for new sessions.
+                  </span>
+                </label>
+
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <p>
+                    Binary source:{" "}
+                    <span className="font-medium text-foreground">{piBinaryPath || "PATH"}</span>
+                  </p>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      updateSettings({
+                        piBinaryPath: defaults.piBinaryPath,
+                        piAgentDir: defaults.piAgentDir,
+                      })
+                    }
+                  >
+                    Reset Pi overrides
                   </Button>
                 </div>
               </div>

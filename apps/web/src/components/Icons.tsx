@@ -149,6 +149,18 @@ export const OpenAI: Icon = (props) => (
   </svg>
 );
 
+export const PiIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path
+      d="M5 7h14M8 7v10M16 7v10M6 17h12"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const ClaudeAI: Icon = (props) => (
   <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 256 257">
     <path
