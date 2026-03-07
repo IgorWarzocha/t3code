@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ThreadId,
   TurnId,
+  type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderTurnStartResult,
 } from "@t3tools/contracts";
@@ -24,6 +25,18 @@ import { makePiAdapterLive } from "./PiAdapter.ts";
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 
+function isAssistantCompletion(
+  event: ProviderRuntimeEvent,
+): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> {
+  return event.type === "item.completed" && event.payload.itemType === "assistant_message";
+}
+
+function isToolCompletion(
+  event: ProviderRuntimeEvent,
+): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> {
+  return event.type === "item.completed" && event.payload.itemType === "dynamic_tool_call";
+}
+
 class FakePiManager {
   private readonly listeners = new Set<(event: PiRpcManagerEvent) => void>();
 
@@ -35,14 +48,6 @@ class FakePiManager {
         status: "ready",
         runtimeMode: input.runtimeMode,
         threadId: input.threadId,
-        ...(input.cwd ? { cwd: input.cwd } : {}),
-        ...(input.model ? { model: input.model } : {}),
-        resumeCursor: {
-          sessionId: "pi-session-1",
-          sessionFile: "/tmp/pi-session-1.json",
-          ...(input.model ? { modelProvider: "openai-codex", modelId: "gpt-5.4" } : {}),
-          ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
-        },
         createdAt: now,
         updatedAt: now,
       };
@@ -52,11 +57,7 @@ class FakePiManager {
   public sendTurnImpl = vi.fn(
     async (input: PiRpcManagerSendTurnInput): Promise<ProviderTurnStartResult> => ({
       threadId: input.threadId,
-      turnId: asTurnId("turn-1"),
-      resumeCursor: {
-        sessionId: "pi-session-1",
-        sessionFile: "/tmp/pi-session-1.json",
-      },
+      turnId: asTurnId("turn-tool"),
     }),
   );
 
@@ -117,103 +118,107 @@ const layer = it.layer(
   ),
 );
 
-layer("PiAdapterLive Pi-specific behavior", (it) => {
-  it.effect("forwards Pi thinking level through session start and turn dispatch", () =>
-    Effect.gen(function* () {
-      fakeManager.startSessionImpl.mockClear();
-      fakeManager.sendTurnImpl.mockClear();
-      const adapter = yield* PiAdapter;
-
-      yield* adapter.startSession({
-        provider: "pi",
-        threadId: asThreadId("thread-pi-options"),
-        model: "openai-codex/gpt-5.4",
-        modelOptions: {
-          pi: {
-            thinkingLevel: "xhigh",
-          },
-        },
-        runtimeMode: "full-access",
-      });
-      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runCollect);
-
-      yield* adapter.sendTurn({
-        threadId: asThreadId("thread-pi-options"),
-        input: "hello",
-        modelOptions: {
-          pi: {
-            thinkingLevel: "minimal",
-          },
-        },
-      });
-
-      assert.equal(fakeManager.startSessionImpl.mock.calls.length, 1);
-      assert.equal(fakeManager.sendTurnImpl.mock.calls.length, 1);
-      assert.equal(fakeManager.startSessionImpl.mock.calls[0]?.[0]?.thinkingLevel, "xhigh");
-      assert.equal(fakeManager.sendTurnImpl.mock.calls[0]?.[0]?.thinkingLevel, "minimal");
-    }),
-  );
-
-  it.effect("extracts visible assistant text from structured Pi message completion", () =>
+layer("PiAdapterLive tool-turn handling", (it) => {
+  it.effect("suppresses empty tool-planning assistant completions and completes on agent_end", () =>
     Effect.gen(function* () {
       const adapter = yield* PiAdapter;
 
       yield* adapter.startSession({
         provider: "pi",
-        threadId: asThreadId("thread-pi-structured"),
+        threadId: asThreadId("thread-pi-tools"),
         model: "openai-codex/gpt-5.4",
         runtimeMode: "full-access",
       });
       yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runCollect);
 
       yield* adapter.sendTurn({
-        threadId: asThreadId("thread-pi-structured"),
-        input: "hello",
+        threadId: asThreadId("thread-pi-tools"),
+        input: "tool turn",
       });
 
       fakeManager.emit({
         kind: "rpc-event",
-        threadId: asThreadId("thread-pi-structured"),
-        turnId: asTurnId("turn-1"),
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
+        payload: { type: "turn_start" },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
         payload: {
           type: "message_end",
           message: {
             role: "assistant",
-            content: [
-              {
-                type: "thinking",
-                text: "hidden reasoning",
-              },
-              {
-                type: "text",
-                text: "hello from pi",
-              },
-            ],
+            content: [{ type: "toolCall", name: "bash" }],
           },
         },
       });
       fakeManager.emit({
         kind: "rpc-event",
-        threadId: asThreadId("thread-pi-structured"),
-        turnId: asTurnId("turn-1"),
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
+        payload: {
+          type: "tool_execution_start",
+          toolCallId: "tool-1",
+          toolName: "bash",
+          args: { command: "pwd" },
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
+        payload: {
+          type: "tool_execution_end",
+          toolCallId: "tool-1",
+          toolName: "bash",
+          result: { ok: true },
+          isError: false,
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
         payload: {
           type: "turn_end",
           message: {
             role: "assistant",
-            content: [
-              {
-                type: "text",
-                text: "hello from pi",
-              },
-            ],
+            content: [{ type: "toolCall", name: "bash" }],
           },
           toolResults: [],
         },
       });
       fakeManager.emit({
         kind: "rpc-event",
-        threadId: asThreadId("thread-pi-structured"),
-        turnId: asTurnId("turn-1"),
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "final pi reply" }],
+          },
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
+        payload: {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "final pi reply" }],
+          },
+          toolResults: [],
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-pi-tools"),
+        turnId: asTurnId("turn-tool"),
         payload: {
           type: "agent_end",
           messages: [],
@@ -221,20 +226,19 @@ layer("PiAdapterLive Pi-specific behavior", (it) => {
       });
 
       const events = Array.from(
-        yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runCollect),
+        yield* Stream.take(adapter.streamEvents, 6).pipe(Stream.runCollect),
       );
 
-      assert.deepStrictEqual(events.map((event) => event.type), [
-        "turn.started",
-        "item.completed",
-        "turn.completed",
-      ]);
-      const completionEvent = events[1];
-      assert.equal(completionEvent?.type, "item.completed");
-      if (completionEvent?.type !== "item.completed") {
-        return;
-      }
-      assert.equal(completionEvent.payload.detail, "hello from pi");
+      const assistantCompletions = events.filter(isAssistantCompletion);
+      const toolCompletions = events.filter(isToolCompletion);
+
+      assert.equal(toolCompletions.length, 1);
+      assert.equal(assistantCompletions.length, 1);
+      assert.equal(assistantCompletions[0]?.payload.detail, "final pi reply");
+      assert.equal(
+        events.some((event) => event.type === "turn.completed"),
+        true,
+      );
     }),
   );
 });

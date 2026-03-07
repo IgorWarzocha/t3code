@@ -5721,7 +5721,7 @@ const PiTraitsPicker = memo(function PiTraitsPicker(props: {
   };
   const triggerLabel = props.thinkingLevel
     ? `Thinking · ${thinkingLabelByOption[props.thinkingLevel]}`
-    : "Thinking · Default";
+    : "Thinking";
 
   return (
     <Menu
@@ -5746,19 +5746,14 @@ const PiTraitsPicker = memo(function PiTraitsPicker(props: {
         <MenuGroup>
           <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Thinking</div>
           <MenuRadioGroup
-            value={props.thinkingLevel ?? "default"}
+            value={props.thinkingLevel ?? ""}
             onValueChange={(value) => {
               if (!value) return;
-              if (value === "default") {
-                props.onThinkingLevelChange(null);
-                return;
-              }
               const nextThinkingLevel = props.options.find((option) => option === value);
               if (!nextThinkingLevel) return;
               props.onThinkingLevelChange(nextThinkingLevel);
             }}
           >
-            <MenuRadioItem value="default">Use Pi default</MenuRadioItem>
             {props.options.map((thinkingLevel) => (
               <MenuRadioItem key={thinkingLevel} value={thinkingLevel}>
                 {thinkingLabelByOption[thinkingLevel]}

@@ -124,6 +124,7 @@ interface PiRpcSessionState {
   sessionFile: string | undefined;
   sessionId: string | undefined;
   currentTurnId: TurnId | undefined;
+  hasObservedTurnStart: boolean;
   status: ProviderSession["status"];
   updatedAt: string;
   abortRequested: boolean;
@@ -314,15 +315,21 @@ export class PiRpcManager {
   private handleRpcEvent(session: PiRpcSessionState, payload: PiRpcEventPayload): void {
     const turnId = session.currentTurnId;
     if (payload.type === "turn_start") {
+      const alreadyRunningTurn = session.hasObservedTurnStart && turnId !== undefined;
+      session.hasObservedTurnStart = true;
       session.status = "running";
       session.updatedAt = new Date().toISOString();
+      if (alreadyRunningTurn) {
+        return;
+      }
     }
-    if (payload.type === "turn_end") {
+    if (payload.type === "agent_end") {
       if (turnId) {
         session.turns.push({ id: turnId, items: [] });
       }
       session.status = "ready";
       session.abortRequested = false;
+      session.hasObservedTurnStart = false;
       session.currentTurnId = undefined;
       session.updatedAt = new Date().toISOString();
     }
@@ -367,6 +374,7 @@ export class PiRpcManager {
       sessionFile: undefined,
       sessionId: undefined,
       currentTurnId: undefined,
+      hasObservedTurnStart: false,
       status: "connecting",
       updatedAt: now,
       abortRequested: false,
@@ -555,6 +563,7 @@ export class PiRpcManager {
 
     const turnId = TurnId.makeUnsafe(randomUUID());
     session.currentTurnId = turnId;
+    session.hasObservedTurnStart = false;
     session.abortRequested = false;
     session.status = "running";
     session.updatedAt = new Date().toISOString();

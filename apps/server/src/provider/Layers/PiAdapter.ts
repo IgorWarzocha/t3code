@@ -206,6 +206,10 @@ function completeAssistantMessageEvent(input: {
   };
 }
 
+function hasVisibleAssistantText(message: unknown): boolean {
+  return extractPiAssistantText(message) !== undefined;
+}
+
 function assistantItemId(threadId: ThreadId, turnId?: TurnId): string {
   return `pi-assistant:${threadId}:${turnId ?? "session"}`;
 }
@@ -391,6 +395,9 @@ function mapManagerEventToRuntimeEvents(
           if (asString(message?.role) !== "assistant") {
             return [];
           }
+          if (!hasVisibleAssistantText(payload.message)) {
+            return [];
+          }
           completedAssistantTurns.add(assistantTurnKey(event.threadId, event.turnId));
           return [
             completeAssistantMessageEvent({
@@ -442,18 +449,25 @@ function mapManagerEventToRuntimeEvents(
           ];
         }
         case "turn_end": {
-          const completedEvents: ProviderRuntimeEvent[] = [];
           const assistantTurnId = assistantTurnKey(event.threadId, event.turnId);
-          if (!completedAssistantTurns.has(assistantTurnId)) {
-            completedEvents.push(
+          if (
+            !completedAssistantTurns.has(assistantTurnId) &&
+            hasVisibleAssistantText(payload.message)
+          ) {
+            completedAssistantTurns.add(assistantTurnId);
+            return [
               completeAssistantMessageEvent({
                 threadId: event.threadId,
                 turnId: event.turnId,
                 message: payload.message,
               }),
-            );
+            ];
           }
-          completedAssistantTurns.delete(assistantTurnId);
+          return [];
+        }
+        case "agent_end": {
+          const turnKey = assistantTurnKey(event.threadId, event.turnId);
+          completedAssistantTurns.delete(turnKey);
 
           const abortingTurnId = abortingTurnIds.get(event.threadId);
           const interrupted =
@@ -462,18 +476,20 @@ function mapManagerEventToRuntimeEvents(
           if (interrupted) {
             abortingTurnIds.delete(event.threadId);
           }
-          completedEvents.push({
-            type: "turn.completed",
-            ...makeEventBase({
-              threadId: event.threadId,
-              ...(event.turnId ? { turnId: event.turnId } : {}),
-            }),
-            payload: {
-              state: interrupted ? "interrupted" : "completed",
-              stopReason: interrupted ? "abort" : null,
+
+          return [
+            {
+              type: "turn.completed",
+              ...makeEventBase({
+                threadId: event.threadId,
+                ...(event.turnId ? { turnId: event.turnId } : {}),
+              }),
+              payload: {
+                state: interrupted ? "interrupted" : "completed",
+                stopReason: interrupted ? "abort" : null,
+              },
             },
-          });
-          return completedEvents;
+          ];
         }
         default:
           return [];
@@ -514,7 +530,11 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
         const unsubscribe = manager.subscribe((event) =>
           Queue.offerAll(
             runtimeEventQueue,
-            mapManagerEventToRuntimeEvents(event, abortingTurnIds, completedAssistantTurns),
+            mapManagerEventToRuntimeEvents(
+              event,
+              abortingTurnIds,
+              completedAssistantTurns,
+            ),
           ).pipe(Effect.asVoid, Effect.runPromiseWith(services)),
         );
         return unsubscribe;
