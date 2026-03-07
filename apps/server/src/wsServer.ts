@@ -271,7 +271,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     ),
   );
 
-  const providerStatuses = yield* providerHealth.getStatuses;
+  const providerStatuses = yield* providerHealth.getStatuses();
 
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
@@ -879,16 +879,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* terminalManager.close(body);
       }
 
-      case WS_METHODS.serverGetConfig:
+      case WS_METHODS.serverGetConfig: {
+        const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         return {
           cwd,
           keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
-          providers: providerStatuses,
+          providers: yield* providerHealth.getStatuses(
+            body.providerOptions ? { providerOptions: body.providerOptions } : undefined,
+          ),
           availableEditors,
         };
+      }
 
       case WS_METHODS.serverGetProviderModels: {
         const body = stripRequestTag(request.body);

@@ -176,6 +176,14 @@ layer("PiAdapterLive Pi-specific behavior", (it) => {
         threadId: asThreadId("thread-pi-structured"),
         turnId: asTurnId("turn-1"),
         payload: {
+          type: "turn_start",
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-pi-structured"),
+        turnId: asTurnId("turn-1"),
+        payload: {
           type: "message_end",
           message: {
             role: "assistant",

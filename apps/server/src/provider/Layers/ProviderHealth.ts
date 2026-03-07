@@ -1,14 +1,15 @@
 /**
- * ProviderHealthLive - Startup-time provider health checks.
+ * ProviderHealthLive - Provider health checks.
  *
- * Performs one-time provider readiness probes when the server starts and
- * keeps the resulting snapshot in memory for `server.getConfig`.
+ * Computes provider readiness probes for `server.getConfig`, allowing
+ * provider-specific startup options such as custom Pi binary paths.
  *
  * Uses effect's ChildProcessSpawner to run CLI probes natively.
  *
  * @module ProviderHealthLive
  */
 import type {
+  ProviderStartOptions,
   ServerProviderAuthStatus,
   ServerProviderStatus,
   ServerProviderStatusState,
@@ -291,76 +292,84 @@ export const checkCodexProviderStatus: Effect.Effect<
   } satisfies ServerProviderStatus;
 });
 
-export const checkPiProviderStatus: Effect.Effect<
-  ServerProviderStatus,
-  never,
-  ChildProcessSpawner.ChildProcessSpawner
-> = Effect.gen(function* () {
-  const checkedAt = new Date().toISOString();
+export const checkPiProviderStatus = (
+  providerOptions?: ProviderStartOptions,
+): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const checkedAt = new Date().toISOString();
+    const commandName = providerOptions?.pi?.binaryPath?.trim() || "pi";
 
-  const versionProbe = yield* runCommand("pi", ["--version"]).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
-  );
+    const versionProbe = yield* runCommand(commandName, ["--version"]).pipe(
+      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+      Effect.result,
+    );
 
-  if (Result.isFailure(versionProbe)) {
-    const error = versionProbe.failure;
+    if (Result.isFailure(versionProbe)) {
+      const error = versionProbe.failure;
+      return {
+        provider: PI_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: isCommandMissingCause(error, commandName)
+          ? commandName === "pi"
+            ? "Pi CLI (`pi`) is not installed or not on PATH."
+            : `Pi CLI binary '${commandName}' is not installed or not reachable.`
+          : `Failed to execute Pi CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+      };
+    }
+
+    if (Option.isNone(versionProbe.success)) {
+      return {
+        provider: PI_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: "Pi CLI is installed but failed to run. Timed out while running command.",
+      };
+    }
+
+    const version = versionProbe.success.value;
+    if (version.code !== 0) {
+      const detail = detailFromResult(version);
+      return {
+        provider: PI_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: detail
+          ? `Pi CLI is installed but failed to run. ${detail}`
+          : "Pi CLI is installed but failed to run.",
+      };
+    }
+
     return {
       provider: PI_PROVIDER,
-      status: "error" as const,
-      available: false,
+      status: "ready" as const,
+      available: true,
       authStatus: "unknown" as const,
       checkedAt,
-      message: isCommandMissingCause(error, "pi")
-        ? "Pi CLI (`pi`) is not installed or not on PATH."
-        : `Failed to execute Pi CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
-    };
-  }
-
-  if (Option.isNone(versionProbe.success)) {
-    return {
-      provider: PI_PROVIDER,
-      status: "error" as const,
-      available: false,
-      authStatus: "unknown" as const,
-      checkedAt,
-      message: "Pi CLI is installed but failed to run. Timed out while running command.",
-    };
-  }
-
-  const version = versionProbe.success.value;
-  if (version.code !== 0) {
-    const detail = detailFromResult(version);
-    return {
-      provider: PI_PROVIDER,
-      status: "error" as const,
-      available: false,
-      authStatus: "unknown" as const,
-      checkedAt,
-      message: detail
-        ? `Pi CLI is installed but failed to run. ${detail}`
-        : "Pi CLI is installed but failed to run.",
-    };
-  }
-
-  return {
-    provider: PI_PROVIDER,
-    status: "ready" as const,
-    available: true,
-    authStatus: "unknown" as const,
-    checkedAt,
-  } satisfies ServerProviderStatus;
-});
+    } satisfies ServerProviderStatus;
+  });
 
 // ── Layer ───────────────────────────────────────────────────────────
 
 export const ProviderHealthLive = Layer.effect(
   ProviderHealth,
   Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const codexStatus = yield* checkCodexProviderStatus;
-    const piStatus = yield* checkPiProviderStatus;
     return {
-      getStatuses: Effect.succeed([codexStatus, piStatus]),
+      getStatuses: (input) =>
+        Effect.gen(function* () {
+          const piStatus = yield* checkPiProviderStatus(input?.providerOptions);
+          return [codexStatus, piStatus] as const;
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
     } satisfies ProviderHealthShape;
   }),
 );

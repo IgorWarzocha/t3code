@@ -6,15 +6,17 @@
  *
  * @module ProviderHealth
  */
-import type { ServerProviderStatus } from "@t3tools/contracts";
+import type { ProviderStartOptions, ServerProviderStatus } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
 
 export interface ProviderHealthShape {
   /**
-   * Read provider health statuses computed at server startup.
+   * Read provider health statuses, optionally scoped by provider startup options.
    */
-  readonly getStatuses: Effect.Effect<ReadonlyArray<ServerProviderStatus>>;
+  readonly getStatuses: (input?: {
+    readonly providerOptions?: ProviderStartOptions | undefined;
+  }) => Effect.Effect<ReadonlyArray<ServerProviderStatus>>;
 }
 
 export class ProviderHealth extends ServiceMap.Service<ProviderHealth, ProviderHealthShape>()(

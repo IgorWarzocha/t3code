@@ -226,7 +226,7 @@ layer("PiAdapterLive tool-turn handling", (it) => {
       });
 
       const events = Array.from(
-        yield* Stream.take(adapter.streamEvents, 6).pipe(Stream.runCollect),
+        yield* Stream.take(adapter.streamEvents, 5).pipe(Stream.runCollect),
       );
 
       const assistantCompletions = events.filter(isAssistantCompletion);

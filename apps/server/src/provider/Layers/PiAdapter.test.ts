@@ -163,6 +163,14 @@ layer("PiAdapterLive", (it) => {
         kind: "rpc-event",
         threadId: asThreadId("thread-2"),
         turnId: asTurnId("turn-1"),
+        payload: {
+          type: "turn_start",
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-2"),
+        turnId: asTurnId("turn-1"),
         model: "openai/gpt-5",
         payload: {
           type: "message_update",
@@ -201,6 +209,15 @@ layer("PiAdapterLive", (it) => {
           type: "turn_end",
           message: { role: "assistant", content: "hello from pi" },
           toolResults: [],
+        },
+      });
+      fakeManager.emit({
+        kind: "rpc-event",
+        threadId: asThreadId("thread-2"),
+        turnId: asTurnId("turn-1"),
+        payload: {
+          type: "agent_end",
+          messages: [],
         },
       });
 

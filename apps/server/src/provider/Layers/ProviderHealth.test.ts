@@ -41,6 +41,23 @@ function mockSpawnerLayer(
   );
 }
 
+function mockSpawnerLayerWithCommand(
+  handler: (input: {
+    commandName: string;
+    args: ReadonlyArray<string>;
+  }) => { stdout: string; stderr: string; code: number },
+) {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const cmd = command as unknown as { command: string; args: ReadonlyArray<string> };
+      return Effect.succeed(
+        mockHandle(handler({ commandName: cmd.command, args: cmd.args })),
+      );
+    }),
+  );
+}
+
 function failingSpawnerLayer(description: string) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
@@ -91,7 +108,7 @@ it.effect("returns unavailable when codex is missing", () =>
 
 it.effect("returns ready when pi is installed", () =>
   Effect.gen(function* () {
-    const status = yield* checkPiProviderStatus;
+    const status = yield* checkPiProviderStatus();
     assert.strictEqual(status.provider, "pi");
     assert.strictEqual(status.status, "ready");
     assert.strictEqual(status.available, true);
@@ -109,13 +126,54 @@ it.effect("returns ready when pi is installed", () =>
 
 it.effect("returns unavailable when pi is missing", () =>
   Effect.gen(function* () {
-    const status = yield* checkPiProviderStatus;
+    const status = yield* checkPiProviderStatus();
     assert.strictEqual(status.provider, "pi");
     assert.strictEqual(status.status, "error");
     assert.strictEqual(status.available, false);
     assert.strictEqual(status.authStatus, "unknown");
     assert.strictEqual(status.message, "Pi CLI (`pi`) is not installed or not on PATH.");
   }).pipe(Effect.provide(failingSpawnerLayer("spawn pi ENOENT"))),
+);
+
+it.effect("uses the configured Pi binary path for availability checks", () =>
+  Effect.gen(function* () {
+    const status = yield* checkPiProviderStatus({
+      pi: {
+        binaryPath: "/opt/pi/bin/pi",
+      },
+    });
+    assert.strictEqual(status.provider, "pi");
+    assert.strictEqual(status.status, "ready");
+    assert.strictEqual(status.available, true);
+    assert.strictEqual(status.authStatus, "unknown");
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayerWithCommand(({ commandName, args }) => {
+        assert.strictEqual(commandName, "/opt/pi/bin/pi");
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "pi 1.0.0\n", stderr: "", code: 0 };
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
+it.effect("reports configured Pi binaries as unavailable when they are not reachable", () =>
+  Effect.gen(function* () {
+    const status = yield* checkPiProviderStatus({
+      pi: {
+        binaryPath: "/opt/pi/bin/pi",
+      },
+    });
+    assert.strictEqual(status.provider, "pi");
+    assert.strictEqual(status.status, "error");
+    assert.strictEqual(status.available, false);
+    assert.strictEqual(status.authStatus, "unknown");
+    assert.strictEqual(
+      status.message,
+      "Pi CLI binary '/opt/pi/bin/pi' is not installed or not reachable.",
+    );
+  }).pipe(Effect.provide(failingSpawnerLayer("spawn /opt/pi/bin/pi ENOENT"))),
 );
 
 it.effect("returns unauthenticated when auth probe reports login required", () =>

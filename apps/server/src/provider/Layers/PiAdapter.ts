@@ -679,18 +679,6 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
           catch: (cause) => toRequestError(input.threadId, "turn/prompt", cause),
         });
 
-        yield* Queue.offer(
-          runtimeEventQueue,
-          {
-            type: "turn.started",
-            ...makeEventBase({
-              threadId: input.threadId,
-              turnId: result.turnId,
-            }),
-            payload: input.model ? { model: input.model } : {},
-          } satisfies ProviderRuntimeEvent,
-        );
-
         return result;
       });
 

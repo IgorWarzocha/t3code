@@ -69,6 +69,11 @@ export const ServerGetProviderModelsInput = Schema.Struct({
 });
 export type ServerGetProviderModelsInput = typeof ServerGetProviderModelsInput.Type;
 
+export const ServerGetConfigInput = Schema.Struct({
+  providerOptions: Schema.optional(ProviderStartOptions),
+});
+export type ServerGetConfigInput = typeof ServerGetConfigInput.Type;
+
 export const ServerConfig = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   keybindingsConfigPath: TrimmedNonEmptyString,

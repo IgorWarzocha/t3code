@@ -80,7 +80,7 @@ const defaultProviderStatuses: ReadonlyArray<ServerProviderStatus> = [
 ];
 
 const defaultProviderHealthService: ProviderHealthShape = {
-  getStatuses: Effect.succeed(defaultProviderStatuses),
+  getStatuses: () => Effect.succeed(defaultProviderStatuses),
 };
 
 class MockTerminalManager implements TerminalManagerShape {
@@ -759,6 +759,45 @@ describe("WebSocket Server", () => {
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
+  });
+
+  it("forwards provider options to provider health when responding to server.getConfig", async () => {
+    const stateDir = makeTempDir("t3code-state-get-config-provider-options-");
+    const keybindingsPath = path.join(stateDir, "keybindings.json");
+    fs.writeFileSync(keybindingsPath, "[]", "utf8");
+    const getStatuses = vi.fn(() => Effect.succeed(defaultProviderStatuses));
+
+    server = await createTestServer({
+      cwd: "/my/workspace",
+      stateDir,
+      providerHealth: {
+        getStatuses,
+      },
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const ws = await connectWs(port);
+    connections.push(ws);
+    await waitForMessage(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.serverGetConfig, {
+      providerOptions: {
+        pi: {
+          binaryPath: "/opt/pi/bin/pi",
+        },
+      },
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(getStatuses).toHaveBeenNthCalledWith(1);
+    expect(getStatuses).toHaveBeenNthCalledWith(2, {
+      providerOptions: {
+        pi: {
+          binaryPath: "/opt/pi/bin/pi",
+        },
+      },
+    });
   });
 
   it("bootstraps default keybindings file when missing", async () => {
