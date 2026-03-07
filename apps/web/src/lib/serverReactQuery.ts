@@ -4,8 +4,9 @@ import { ensureNativeApi } from "~/nativeApi";
 
 export const serverQueryKeys = {
   all: ["server"] as const,
+  configAll: ["server", "config"] as const,
   config: (providerOptions?: ProviderStartOptions) =>
-    ["server", "config", providerOptions ?? null] as const,
+    [...serverQueryKeys.configAll, providerOptions ?? null] as const,
   providerModels: (provider?: ProviderKind, providerOptions?: ProviderStartOptions) =>
     ["server", "provider-models", provider ?? null, providerOptions ?? null] as const,
 };

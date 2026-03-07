@@ -280,6 +280,8 @@ function mapManagerEventToRuntimeEvents(
         },
       ];
     case "exit": {
+      abortingTurnIds.delete(event.threadId);
+      completedAssistantTurns.delete(assistantTurnKey(event.threadId, event.turnId));
       if (event.expected) {
         return [
           {
@@ -314,6 +316,7 @@ function mapManagerEventToRuntimeEvents(
       const payload = event.payload;
       switch (payload.type) {
         case "turn_start":
+          abortingTurnIds.delete(event.threadId);
           completedAssistantTurns.delete(assistantTurnKey(event.threadId, event.turnId));
           return [
             {
