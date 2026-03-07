@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
 import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings";
 import { EditorId } from "./editor";
-import { ProviderKind } from "./orchestration";
+import { ProviderKind, ProviderStartOptions } from "./orchestration";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -44,6 +44,29 @@ export const ServerProviderStatus = Schema.Struct({
 export type ServerProviderStatus = typeof ServerProviderStatus.Type;
 
 const ServerProviderStatuses = Schema.Array(ServerProviderStatus);
+
+export const ServerProviderModel = Schema.Struct({
+  slug: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+});
+export type ServerProviderModel = typeof ServerProviderModel.Type;
+
+export const ServerProviderModelCatalogEntry = Schema.Struct({
+  defaultModel: Schema.NullOr(TrimmedNonEmptyString),
+  models: Schema.Array(ServerProviderModel),
+});
+export type ServerProviderModelCatalogEntry = typeof ServerProviderModelCatalogEntry.Type;
+
+export const ServerProviderModelCatalog = Schema.Struct({
+  codex: Schema.optional(ServerProviderModelCatalogEntry),
+  pi: Schema.optional(ServerProviderModelCatalogEntry),
+});
+export type ServerProviderModelCatalog = typeof ServerProviderModelCatalog.Type;
+
+export const ServerGetProviderModelsInput = Schema.Struct({
+  providerOptions: Schema.optional(ProviderStartOptions),
+});
+export type ServerGetProviderModelsInput = typeof ServerGetProviderModelsInput.Type;
 
 export const ServerConfig = Schema.Struct({
   cwd: TrimmedNonEmptyString,

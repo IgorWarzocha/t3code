@@ -54,6 +54,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import { ProviderModelCatalog } from "./provider/Services/ProviderModelCatalog";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors } from "./open";
@@ -208,7 +209,8 @@ export type ServerCoreRuntimeServices =
   | CheckpointDiffQuery
   | OrchestrationReactor
   | ProviderService
-  | ProviderHealth;
+  | ProviderHealth
+  | ProviderModelCatalog;
 
 export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
@@ -254,6 +256,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const terminalManager = yield* TerminalManager;
   const keybindingsManager = yield* Keybindings;
   const providerHealth = yield* ProviderHealth;
+  const providerModelCatalog = yield* ProviderModelCatalog;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -886,6 +889,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           providers: providerStatuses,
           availableEditors,
         };
+
+      case WS_METHODS.serverGetProviderModels: {
+        const body = stripRequestTag(request.body);
+        return yield* providerModelCatalog.getCatalog(
+          body.providerOptions ? { providerOptions: body.providerOptions } : undefined,
+        );
+      }
 
       case WS_METHODS.serverUpsertKeybinding: {
         const body = stripRequestTag(request.body);

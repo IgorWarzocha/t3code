@@ -1,6 +1,11 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { Option, Schema } from "effect";
-import { type ProviderKind, type ProviderServiceTier } from "@t3tools/contracts";
+import type {
+  ProviderKind,
+  ProviderServiceTier,
+  ServerProviderModel,
+  ServerProviderModelCatalog,
+} from "@t3tools/contracts";
 import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
@@ -62,6 +67,8 @@ export interface AppModelOption {
   name: string;
   isCustom: boolean;
 }
+
+type DiscoveredModel = Pick<ServerProviderModel, "slug" | "name">;
 
 export function resolveAppServiceTier(serviceTier: AppServiceTier): ProviderServiceTier | null {
   return serviceTier === "auto" ? null : serviceTier;
@@ -139,8 +146,11 @@ export function getAppModelOptions(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel?: string | null,
+  discoveredModels: readonly DiscoveredModel[] = [],
 ): AppModelOption[] {
-  const options: AppModelOption[] = getModelOptions(provider).map(({ slug, name }) => ({
+  const baseOptionsSource =
+    provider === "pi" && discoveredModels.length > 0 ? discoveredModels : getModelOptions(provider);
+  const options: AppModelOption[] = baseOptionsSource.map(({ slug, name }) => ({
     slug,
     name,
     isCustom: false,
@@ -176,8 +186,10 @@ export function resolveAppModelSelection(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel: string | null | undefined,
+  discoveredModels: readonly DiscoveredModel[] = [],
+  fallbackModel?: string | null,
 ): string {
-  const options = getAppModelOptions(provider, customModels, selectedModel);
+  const options = getAppModelOptions(provider, customModels, selectedModel, discoveredModels);
   const trimmedSelectedModel = selectedModel?.trim();
   if (trimmedSelectedModel) {
     const direct = options.find((option) => option.slug === trimmedSelectedModel);
@@ -195,7 +207,12 @@ export function resolveAppModelSelection(
 
   const normalizedSelectedModel = normalizeModelSlug(selectedModel, provider);
   if (!normalizedSelectedModel) {
-    return getDefaultModel(provider);
+    const normalizedFallbackModel = normalizeModelSlug(fallbackModel, provider);
+    if (normalizedFallbackModel) {
+      return normalizedFallbackModel;
+    }
+    const firstOption = options[0]?.slug;
+    return firstOption ?? getDefaultModel(provider);
   }
 
   return (
@@ -209,9 +226,10 @@ export function getSlashModelOptions(
   customModels: readonly string[],
   query: string,
   selectedModel?: string | null,
+  discoveredModels: readonly DiscoveredModel[] = [],
 ): AppModelOption[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const options = getAppModelOptions(provider, customModels, selectedModel);
+  const options = getAppModelOptions(provider, customModels, selectedModel, discoveredModels);
   if (!normalizedQuery) {
     return options;
   }
@@ -221,6 +239,20 @@ export function getSlashModelOptions(
     const searchName = option.name.toLowerCase();
     return searchSlug.includes(normalizedQuery) || searchName.includes(normalizedQuery);
   });
+}
+
+export function getDiscoveredModelsForProvider(
+  catalog: ServerProviderModelCatalog | undefined,
+  provider: ProviderKind,
+): readonly DiscoveredModel[] {
+  return catalog?.[provider]?.models ?? [];
+}
+
+export function getDiscoveredDefaultModelForProvider(
+  catalog: ServerProviderModelCatalog | undefined,
+  provider: ProviderKind,
+): string | null {
+  return catalog?.[provider]?.defaultModel ?? null;
 }
 
 function emitChange(): void {

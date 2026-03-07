@@ -14,6 +14,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
+  type ServerProviderModelCatalog,
   type ServerProviderStatus,
   type ProviderKind,
   type ProviderStartOptions,
@@ -50,7 +51,11 @@ import {
 } from "@tanstack/react-virtual";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
-import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import {
+  serverConfigQueryOptions,
+  serverProviderModelsQueryOptions,
+  serverQueryKeys,
+} from "~/lib/serverReactQuery";
 
 import { isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
@@ -201,6 +206,8 @@ import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import {
+  getDiscoveredDefaultModelForProvider,
+  getDiscoveredModelsForProvider,
   getCustomModelsForProvider,
   getAppModelOptions,
   resolveAppModelSelection,
@@ -797,19 +804,31 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeThread.session !== null),
   );
   const providerStartOptions = useMemo(() => buildProviderStartOptions(settings), [settings]);
+  const providerModelsQuery = useQuery(serverProviderModelsQueryOptions(providerStartOptions));
+  const providerModels = providerModelsQuery.data;
   const selectedServiceTierSetting = settings.codexServiceTier;
   const selectedServiceTier = resolveAppServiceTier(selectedServiceTierSetting);
   const lockedProvider: ProviderKind | null = hasThreadStarted
     ? (sessionProvider ?? selectedProviderByThreadId ?? null)
     : null;
   const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "codex";
+  const customModelsForSelectedProvider = getCustomModelsForProvider(settings, selectedProvider);
+  const discoveredModelsForSelectedProvider = getDiscoveredModelsForProvider(
+    providerModels,
+    selectedProvider,
+  );
+  const discoveredDefaultModelForSelectedProvider = getDiscoveredDefaultModelForProvider(
+    providerModels,
+    selectedProvider,
+  );
   const baseThreadModel = resolveModelSlugForProvider(
     selectedProvider,
     activeThread?.model ??
       (activeThread && selectedProvider !== sessionProvider ? null : activeProject?.model) ??
+      discoveredDefaultModelForSelectedProvider ??
+      discoveredModelsForSelectedProvider[0]?.slug ??
       getDefaultModel(selectedProvider),
   );
-  const customModelsForSelectedProvider = getCustomModelsForProvider(settings, selectedProvider);
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
@@ -819,8 +838,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       selectedProvider,
       customModelsForSelectedProvider,
       draftModel,
+      discoveredModelsForSelectedProvider,
+      discoveredDefaultModelForSelectedProvider,
     ) as ModelSlug;
-  }, [baseThreadModel, composerDraft.model, customModelsForSelectedProvider, selectedProvider]);
+  }, [
+    baseThreadModel,
+    composerDraft.model,
+    customModelsForSelectedProvider,
+    discoveredDefaultModelForSelectedProvider,
+    discoveredModelsForSelectedProvider,
+    selectedProvider,
+  ]);
   const reasoningOptions = getReasoningEffortOptions(selectedProvider);
   const supportsReasoningEffort = reasoningOptions.length > 0;
   const selectedEffort = composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
@@ -838,8 +866,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
-    () => getCustomModelOptionsByProvider(settings),
-    [settings],
+    () => getCustomModelOptionsByProvider(settings, providerModels),
+    [providerModels, settings],
   );
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByProvider[selectedProvider];
@@ -3078,13 +3106,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(
         activeThread.id,
-        resolveAppModelSelection(provider, getCustomModelsForProvider(settings, provider), model),
+        resolveAppModelSelection(
+          provider,
+          getCustomModelsForProvider(settings, provider),
+          model,
+          getDiscoveredModelsForProvider(providerModels, provider),
+          getDiscoveredDefaultModelForProvider(providerModels, provider),
+        ),
       );
       scheduleComposerFocus();
     },
     [
       activeThread,
       lockedProvider,
+      providerModels,
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
@@ -5309,10 +5344,23 @@ const COMING_SOON_PROVIDER_OPTIONS = [
 function getCustomModelOptionsByProvider(settings: {
   customCodexModels: readonly string[];
   customPiModels: readonly string[];
-}): Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>> {
+}, discoveredModels: ServerProviderModelCatalog | undefined): Record<
+  ProviderKind,
+  ReadonlyArray<{ slug: string; name: string }>
+> {
   return {
-    codex: getAppModelOptions("codex", settings.customCodexModels),
-    pi: getAppModelOptions("pi", settings.customPiModels),
+    codex: getAppModelOptions(
+      "codex",
+      settings.customCodexModels,
+      undefined,
+      getDiscoveredModelsForProvider(discoveredModels, "codex"),
+    ),
+    pi: getAppModelOptions(
+      "pi",
+      settings.customPiModels,
+      undefined,
+      getDiscoveredModelsForProvider(discoveredModels, "pi"),
+    ),
   };
 }
 

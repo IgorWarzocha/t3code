@@ -8,6 +8,7 @@ import readline from "node:readline";
 import {
   type ProviderSession,
   RuntimeMode,
+  type ServerProviderModelCatalogEntry,
   ThreadId,
   TurnId,
   type ProviderTurnStartResult,
@@ -20,6 +21,7 @@ import type {
 
 type PiRpcCommand =
   | { id?: string; type: "get_state" }
+  | { id?: string; type: "get_available_models" }
   | { id?: string; type: "prompt"; message: string; images?: ReadonlyArray<{
       type: "image";
       data: string;
@@ -129,6 +131,15 @@ type PiRpcStateResponse = {
   readonly sessionId?: string;
 };
 
+type PiRpcAvailableModelsResponse = {
+  readonly models?: ReadonlyArray<unknown>;
+};
+
+interface PiRpcCatalogModel {
+  readonly slug: string;
+  readonly name: string;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -183,6 +194,49 @@ function modelFromState(
     return `${provider}/${modelId}`;
   }
   return fallback;
+}
+
+function parseCatalogModel(value: unknown): PiRpcCatalogModel | null {
+  const record = asRecord(value);
+  const provider = asString(record?.provider);
+  const modelId =
+    asString(record?.modelId) ??
+    asString(record?.id) ??
+    asString(record?.name);
+  if (!provider || !modelId) {
+    return null;
+  }
+
+  const slug = `${provider}/${modelId}`;
+  const name = asString(record?.name) ?? modelId;
+  return { slug, name };
+}
+
+function toModelCatalogEntry(input: {
+  readonly state: PiRpcStateResponse | undefined;
+  readonly data: unknown;
+}): ServerProviderModelCatalogEntry {
+  const response = asRecord(input.data) as PiRpcAvailableModelsResponse | undefined;
+  const models = Array.isArray(response?.models)
+    ? response.models
+        .map(parseCatalogModel)
+        .filter((model): model is PiRpcCatalogModel => model !== null)
+    : [];
+
+  const dedupedModels: PiRpcCatalogModel[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    if (seen.has(model.slug)) {
+      continue;
+    }
+    seen.add(model.slug);
+    dedupedModels.push(model);
+  }
+
+  return {
+    defaultModel: modelFromState(input.state, undefined) ?? null,
+    models: dedupedModels,
+  };
 }
 
 function toProviderSession(session: PiRpcSessionState): ProviderSession {
@@ -390,6 +444,38 @@ export class PiRpcManager {
     return (response.data as PiRpcStateResponse | undefined) ?? {};
   }
 
+  private async stopSessionInstance(session: PiRpcSessionState): Promise<void> {
+    session.stopping = true;
+    session.updatedAt = new Date().toISOString();
+    session.stdoutRl.close();
+    session.stderrRl.close();
+    session.child.stdin.end();
+    if (!session.child.killed) {
+      session.child.kill("SIGTERM");
+    }
+  }
+
+  async discoverModels(
+    input: Omit<PiRpcManagerStartSessionInput, "threadId" | "runtimeMode" | "resumeCursor" | "model">,
+  ): Promise<ServerProviderModelCatalogEntry> {
+    const session = this.createSession({
+      threadId: ThreadId.makeUnsafe(randomUUID()),
+      runtimeMode: "full-access",
+      ...input,
+    });
+
+    try {
+      const state = await this.getState(session);
+      const response = await this.sendCommand(session, { type: "get_available_models" });
+      return toModelCatalogEntry({
+        state,
+        data: response.data,
+      });
+    } finally {
+      await this.stopSessionInstance(session);
+    }
+  }
+
   async startSession(input: PiRpcManagerStartSessionInput): Promise<ProviderSession> {
     if (input.runtimeMode === "approval-required") {
       throw new Error("Pi only supports runtimeMode 'full-access'.");
@@ -527,14 +613,7 @@ export class PiRpcManager {
     if (!session) {
       return;
     }
-    session.stopping = true;
-    session.updatedAt = new Date().toISOString();
-    session.stdoutRl.close();
-    session.stderrRl.close();
-    session.child.stdin.end();
-    if (!session.child.killed) {
-      session.child.kill("SIGTERM");
-    }
+    await this.stopSessionInstance(session);
     this.sessions.delete(threadId);
   }
 

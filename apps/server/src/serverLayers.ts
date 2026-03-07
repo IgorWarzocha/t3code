@@ -21,6 +21,7 @@ import { ProviderUnsupportedError } from "./provider/Errors";
 import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter";
 import { makePiAdapterLive } from "./provider/Layers/PiAdapter";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
+import { ProviderModelCatalogLive } from "./provider/Layers/ProviderModelCatalog";
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
 import { ProviderService } from "./provider/Services/ProviderService";
@@ -124,6 +125,7 @@ export function makeServerRuntimeServicesLayer() {
 
   return Layer.mergeAll(
     orchestrationReactorLayer,
+    ProviderModelCatalogLive,
     gitCoreLayer,
     gitManagerLayer,
     terminalLayer,
