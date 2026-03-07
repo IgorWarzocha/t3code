@@ -161,7 +161,8 @@ function collectPiTextFragments(value: unknown): string[] {
 function extractPiAssistantText(message: unknown): string | undefined {
   const record = asRecord(message);
   if (!record) {
-    return summarizeUnknown(message);
+    const direct = summarizeUnknown(message);
+    return direct === "[]" || direct === "{}" ? undefined : direct;
   }
 
   const content = collectPiTextFragments(record.content);
@@ -170,11 +171,39 @@ function extractPiAssistantText(message: unknown): string | undefined {
     return text.trim().length > 0 ? text : undefined;
   }
 
-  return summarizeUnknown(record.content) ?? summarizeUnknown(record);
+  const directText = asString(record.text);
+  if (directText?.trim()) {
+    return directText;
+  }
+
+  return undefined;
 }
 
 function assistantTurnKey(threadId: ThreadId, turnId?: TurnId): string {
   return `${threadId}:${turnId ?? "session"}`;
+}
+
+function completeAssistantMessageEvent(input: {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly message: unknown;
+}): ProviderRuntimeEvent {
+  const assistantText = extractPiAssistantText(input.message);
+  return {
+    type: "item.completed",
+    ...makeEventBase({
+      threadId: input.threadId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      itemId: assistantItemId(input.threadId, input.turnId),
+    }),
+    payload: {
+      itemType: "assistant_message",
+      status: "completed",
+      title: "Assistant message",
+      ...(assistantText ? { detail: assistantText } : {}),
+      data: input.message,
+    },
+  };
 }
 
 function assistantItemId(threadId: ThreadId, turnId?: TurnId): string {
@@ -355,6 +384,26 @@ function mapManagerEventToRuntimeEvents(
               },
             ];
           }
+          if (assistantType === "done") {
+            const assistantText = extractPiAssistantText(payload.message);
+            if (!assistantText) {
+              return [];
+            }
+            return [
+              {
+                type: "content.delta",
+                ...makeEventBase({
+                  threadId: event.threadId,
+                  ...(event.turnId ? { turnId: event.turnId } : {}),
+                  itemId: assistantItem,
+                }),
+                payload: {
+                  streamKind: "assistant_text",
+                  delta: assistantText,
+                },
+              },
+            ];
+          }
           return [];
         }
         case "message_end": {
@@ -363,23 +412,12 @@ function mapManagerEventToRuntimeEvents(
             return [];
           }
           completedAssistantTurns.add(assistantTurnKey(event.threadId, event.turnId));
-          const assistantText = extractPiAssistantText(message);
           return [
-            {
-              type: "item.completed",
-              ...makeEventBase({
-                threadId: event.threadId,
-                ...(event.turnId ? { turnId: event.turnId } : {}),
-                itemId: assistantItemId(event.threadId, event.turnId),
-              }),
-              payload: {
-                itemType: "assistant_message",
-                status: "completed",
-                title: "Assistant message",
-                ...(assistantText ? { detail: assistantText } : {}),
-                data: payload.message,
-              },
-            },
+            completeAssistantMessageEvent({
+              threadId: event.threadId,
+              turnId: event.turnId,
+              message: payload.message,
+            }),
           ];
         }
         case "tool_execution_start":
@@ -425,25 +463,15 @@ function mapManagerEventToRuntimeEvents(
         }
         case "turn_end": {
           const completedEvents: ProviderRuntimeEvent[] = [];
-          const assistantMessage = asRecord(payload.message);
           const assistantTurnId = assistantTurnKey(event.threadId, event.turnId);
           if (!completedAssistantTurns.has(assistantTurnId)) {
-            const assistantText = extractPiAssistantText(assistantMessage);
-            completedEvents.push({
-              type: "item.completed",
-              ...makeEventBase({
+            completedEvents.push(
+              completeAssistantMessageEvent({
                 threadId: event.threadId,
-                ...(event.turnId ? { turnId: event.turnId } : {}),
-                itemId: assistantItemId(event.threadId, event.turnId),
+                turnId: event.turnId,
+                message: payload.message,
               }),
-              payload: {
-                itemType: "assistant_message",
-                status: "completed",
-                title: "Assistant message",
-                ...(assistantText ? { detail: assistantText } : {}),
-                data: payload.message,
-              },
-            });
+            );
           }
           completedAssistantTurns.delete(assistantTurnId);
 
@@ -466,6 +494,29 @@ function mapManagerEventToRuntimeEvents(
             },
           });
           return completedEvents;
+        }
+        case "agent_end": {
+          const messages = Array.isArray(payload.messages) ? payload.messages : [];
+          let assistantMessage: unknown = null;
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index];
+            if (asString(asRecord(message)?.role) === "assistant") {
+              assistantMessage = message;
+              break;
+            }
+          }
+          const assistantTurnId = assistantTurnKey(event.threadId, event.turnId);
+          if (!assistantMessage || completedAssistantTurns.has(assistantTurnId)) {
+            return [];
+          }
+          completedAssistantTurns.add(assistantTurnId);
+          return [
+            completeAssistantMessageEvent({
+              threadId: event.threadId,
+              turnId: event.turnId,
+              message: assistantMessage,
+            }),
+          ];
         }
         default:
           return [];
