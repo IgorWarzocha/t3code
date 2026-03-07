@@ -4,6 +4,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   type ProviderKind,
+  type ServerProviderStatus,
   type UserInputQuestion,
   type TurnId,
 } from "@t3tools/contracts";
@@ -18,10 +19,28 @@ export const PROVIDER_OPTIONS: Array<{
   available: boolean;
 }> = [
   { value: "codex", label: "Codex", available: true },
-  { value: "pi", label: "Pi", available: true },
+  { value: "pi", label: "Pi", available: false },
   { value: "claudeCode", label: "Claude Code", available: false },
   { value: "cursor", label: "Cursor", available: false },
 ];
+
+export function resolveProviderOptions(
+  providerStatuses: ReadonlyArray<Pick<ServerProviderStatus, "provider" | "available">>,
+) {
+  const availabilityByProvider = new Map(
+    providerStatuses.map((status) => [status.provider, status.available] as const),
+  );
+
+  return PROVIDER_OPTIONS.map((option) =>
+    option.value === "claudeCode" || option.value === "cursor"
+      ? option
+      : {
+          value: option.value,
+          label: option.label,
+          available: availabilityByProvider.get(option.value) ?? option.available,
+        },
+  );
+}
 
 export interface WorkLogEntry {
   id: string;

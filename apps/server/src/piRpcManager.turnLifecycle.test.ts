@@ -182,4 +182,176 @@ describe("PiRpcManager turn lifecycle", () => {
       { type: "agent_end", turnId: started.turnId },
     ]);
   });
+
+  it("drops a failed startup session instead of leaving it registered", async () => {
+    let child: FakeChildProcess | undefined;
+    spawnMock.mockImplementation(() => {
+      const childProcess = createFakeChild();
+      child = childProcess;
+
+      childProcess.stdin.on("data", (chunk) => {
+        for (const rawLine of chunk.toString("utf8").trim().split("\n")) {
+          if (!rawLine) continue;
+          const command = JSON.parse(rawLine) as { id: string; type: string };
+
+          if (command.type === "get_state") {
+            childProcess.stdout.write(
+              `${JSON.stringify({
+                id: command.id,
+                type: "response",
+                command: "get_state",
+                success: true,
+                data: {
+                  sessionFile: "/tmp/pi-session.json",
+                  sessionId: "pi-session-1",
+                },
+              })}\n`,
+            );
+            continue;
+          }
+
+          if (command.type === "set_model") {
+            childProcess.stdout.write(
+              `${JSON.stringify({
+                id: command.id,
+                type: "response",
+                command: "set_model",
+                success: false,
+                error: "bad model",
+              })}\n`,
+            );
+          }
+        }
+      });
+
+      return childProcess as unknown as ChildProcessWithoutNullStreams;
+    });
+
+    const { PiRpcManager } = await import("./piRpcManager.ts");
+    const manager = new PiRpcManager();
+    const threadId = ThreadId.makeUnsafe("pi-failed-start");
+
+    await expect(
+      manager.startSession({
+        threadId,
+        runtimeMode: "full-access",
+        model: "openai-codex/gpt-5.4",
+      }),
+    ).rejects.toThrow("bad model");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(manager.hasSession(threadId)).toBe(false);
+    expect(manager.listSessions()).toEqual([]);
+    expect(child?.killed).toBe(true);
+  });
+
+  it("resets transient turn state after a failed send so the next turn can start cleanly", async () => {
+    let getStateCount = 0;
+    spawnMock.mockImplementation(() => {
+      const child = createFakeChild();
+
+      child.stdin.on("data", (chunk) => {
+        for (const rawLine of chunk.toString("utf8").trim().split("\n")) {
+          if (!rawLine) continue;
+          const command = JSON.parse(rawLine) as { id: string; type: string };
+
+          if (command.type === "get_state") {
+            getStateCount += 1;
+            const shouldFailFollowUpState = getStateCount === 3;
+            child.stdout.write(
+              `${JSON.stringify(
+                shouldFailFollowUpState
+                  ? {
+                      id: command.id,
+                      type: "response",
+                      command: "get_state",
+                      success: false,
+                      error: "state failed",
+                    }
+                  : {
+                      id: command.id,
+                      type: "response",
+                      command: "get_state",
+                      success: true,
+                      data: {
+                        model: {
+                          provider: "openai-codex",
+                          id: "gpt-5.4",
+                          name: "GPT-5.4",
+                        },
+                        sessionFile: "/tmp/pi-session.json",
+                        sessionId: "pi-session-1",
+                        thinkingLevel: "low",
+                      },
+                    },
+              )}\n`,
+            );
+            continue;
+          }
+
+          if (command.type === "set_model" || command.type === "set_thinking_level") {
+            child.stdout.write(
+              `${JSON.stringify({
+                id: command.id,
+                type: "response",
+                command: command.type,
+                success: true,
+              })}\n`,
+            );
+            continue;
+          }
+
+          if (command.type === "prompt") {
+            child.stdout.write(
+              `${JSON.stringify({
+                id: command.id,
+                type: "response",
+                command: "prompt",
+                success: true,
+              })}\n`,
+            );
+          }
+        }
+      });
+
+      return child as unknown as ChildProcessWithoutNullStreams;
+    });
+
+    const { PiRpcManager } = await import("./piRpcManager.ts");
+    const manager = new PiRpcManager();
+    const threadId = ThreadId.makeUnsafe("pi-failed-send");
+
+    await manager.startSession({
+      threadId,
+      runtimeMode: "full-access",
+      model: "openai-codex/gpt-5.4",
+      thinkingLevel: "low",
+    });
+
+    await expect(
+      manager.sendTurn({
+        threadId,
+        input: "first turn",
+      }),
+    ).rejects.toThrow("state failed");
+
+    expect(manager.listSessions()).toEqual([
+      expect.objectContaining({
+        threadId,
+        status: "ready",
+      }),
+    ]);
+
+    await expect(
+      manager.sendTurn({
+        threadId,
+        input: "second turn",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        threadId,
+      }),
+    );
+  });
 });

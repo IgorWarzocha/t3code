@@ -480,6 +480,13 @@ export class PiRpcManager {
     }
   }
 
+  private async discardSession(session: PiRpcSessionState): Promise<void> {
+    if (this.sessions.get(session.threadId) === session) {
+      this.sessions.delete(session.threadId);
+    }
+    await this.stopSessionInstance(session).catch(() => undefined);
+  }
+
   async discoverModels(
     input: Omit<PiRpcManagerStartSessionInput, "threadId" | "runtimeMode" | "resumeCursor" | "model">,
   ): Promise<ServerProviderModelCatalogEntry> {
@@ -509,42 +516,47 @@ export class PiRpcManager {
     const session = this.createSession(input);
     this.sessions.set(input.threadId, session);
 
-    await this.getState(session);
+    try {
+      await this.getState(session);
 
-    const resume = asRecord(input.resumeCursor);
-    const resumeSessionFile = asString(resume?.sessionFile);
-    if (resumeSessionFile) {
-      const switchResponse = await this.sendCommand(session, {
-        type: "switch_session",
-        sessionPath: resumeSessionFile,
-      });
-      const switchData = asRecord(switchResponse.data);
-      if (switchData?.cancelled === true) {
-        throw new Error("Pi session switch was cancelled.");
+      const resume = asRecord(input.resumeCursor);
+      const resumeSessionFile = asString(resume?.sessionFile);
+      if (resumeSessionFile) {
+        const switchResponse = await this.sendCommand(session, {
+          type: "switch_session",
+          sessionPath: resumeSessionFile,
+        });
+        const switchData = asRecord(switchResponse.data);
+        if (switchData?.cancelled === true) {
+          throw new Error("Pi session switch was cancelled.");
+        }
       }
-    }
 
-    if (input.model) {
-      await this.setModel(session, input.model);
-    }
+      if (input.model) {
+        await this.setModel(session, input.model);
+      }
 
-    if (input.thinkingLevel) {
-      await this.setThinkingLevel(session, input.thinkingLevel);
-    }
+      if (input.thinkingLevel) {
+        await this.setThinkingLevel(session, input.thinkingLevel);
+      }
 
-    const state = await this.getState(session);
-    session.sessionFile = state.sessionFile;
-    session.sessionId = state.sessionId;
-    session.model = modelFromState(state, session.model);
-    session.thinkingLevel = thinkingLevelFromState(state, session.thinkingLevel);
-    session.resumeCursor = buildResumeCursor({
-      cwd: session.cwd,
-      model: session.model,
-      state,
-    });
-    session.status = state.isStreaming ? "running" : "ready";
-    session.updatedAt = new Date().toISOString();
-    return toProviderSession(session);
+      const state = await this.getState(session);
+      session.sessionFile = state.sessionFile;
+      session.sessionId = state.sessionId;
+      session.model = modelFromState(state, session.model);
+      session.thinkingLevel = thinkingLevelFromState(state, session.thinkingLevel);
+      session.resumeCursor = buildResumeCursor({
+        cwd: session.cwd,
+        model: session.model,
+        state,
+      });
+      session.status = state.isStreaming ? "running" : "ready";
+      session.updatedAt = new Date().toISOString();
+      return toProviderSession(session);
+    } catch (error) {
+      await this.discardSession(session);
+      throw error;
+    }
   }
 
   async sendTurn(input: PiRpcManagerSendTurnInput): Promise<ProviderTurnStartResult> {
@@ -562,30 +574,46 @@ export class PiRpcManager {
     }
 
     const turnId = TurnId.makeUnsafe(randomUUID());
+    const previousState = {
+      currentTurnId: session.currentTurnId,
+      hasObservedTurnStart: session.hasObservedTurnStart,
+      abortRequested: session.abortRequested,
+      status: session.status,
+      updatedAt: session.updatedAt,
+    };
     session.currentTurnId = turnId;
     session.hasObservedTurnStart = false;
     session.abortRequested = false;
     session.status = "running";
     session.updatedAt = new Date().toISOString();
-    await this.sendCommand(session, {
-      type: "prompt",
-      message: input.input ?? "",
-      ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
-    });
-    const state = await this.getState(session);
-    session.model = modelFromState(state, session.model);
-    session.thinkingLevel = thinkingLevelFromState(state, session.thinkingLevel);
-    session.resumeCursor = buildResumeCursor({
-      cwd: session.cwd,
-      model: session.model,
-      state,
-    });
-    session.updatedAt = new Date().toISOString();
-    return {
-      threadId: input.threadId,
-      turnId,
-      ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
-    };
+    try {
+      await this.sendCommand(session, {
+        type: "prompt",
+        message: input.input ?? "",
+        ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
+      });
+      const state = await this.getState(session);
+      session.model = modelFromState(state, session.model);
+      session.thinkingLevel = thinkingLevelFromState(state, session.thinkingLevel);
+      session.resumeCursor = buildResumeCursor({
+        cwd: session.cwd,
+        model: session.model,
+        state,
+      });
+      session.updatedAt = new Date().toISOString();
+      return {
+        threadId: input.threadId,
+        turnId,
+        ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
+      };
+    } catch (error) {
+      session.currentTurnId = previousState.currentTurnId;
+      session.hasObservedTurnStart = previousState.hasObservedTurnStart;
+      session.abortRequested = previousState.abortRequested;
+      session.status = previousState.status;
+      session.updatedAt = new Date().toISOString();
+      throw error;
+    }
   }
 
   async interruptTurn(threadId: ThreadId): Promise<void> {

@@ -81,7 +81,7 @@ import {
   type PendingApproval,
   type PendingUserInput,
   type ProviderPickerKind,
-  PROVIDER_OPTIONS,
+  resolveProviderOptions,
   deriveWorkLogEntries,
   hasToolActivityForTurn,
   isLatestTurnSettled,
@@ -896,23 +896,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
-  const searchableModelOptions = useMemo(
-    () =>
-      AVAILABLE_PROVIDER_OPTIONS.filter(
-        (option) => lockedProvider === null || option.value === lockedProvider,
-      ).flatMap((option) =>
-        modelOptionsByProvider[option.value].map(({ slug, name }) => ({
-          provider: option.value,
-          providerLabel: option.label,
-          slug,
-          name,
-          searchSlug: slug.toLowerCase(),
-          searchName: name.toLowerCase(),
-          searchProvider: option.label.toLowerCase(),
-        })),
-      ),
-    [lockedProvider, modelOptionsByProvider],
-  );
   const phase = derivePhase(activeThread?.session ?? null);
   const isSendBusy = sendPhase !== "idle";
   const isPreparingWorktree = sendPhase === "preparing-worktree";
@@ -1245,6 +1228,43 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }),
   );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
+  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
+  const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
+  const providerOptions = useMemo(
+    () => resolveProviderOptions(providerStatuses),
+    [providerStatuses],
+  );
+  const availableProviderOptions = useMemo(
+    () =>
+      providerOptions.filter(
+        (
+          option,
+        ): option is {
+          value: ProviderKind;
+          label: string;
+          available: true;
+        } => option.available && option.value !== "claudeCode" && option.value !== "cursor",
+      ),
+    [providerOptions],
+  );
+  const searchableModelOptions = useMemo(
+    () =>
+      availableProviderOptions.filter(
+        (option) => lockedProvider === null || option.value === lockedProvider,
+      ).flatMap((option) =>
+        modelOptionsByProvider[option.value].map(({ slug, name }) => ({
+          provider: option.value,
+          providerLabel: option.label,
+          slug,
+          name,
+          searchSlug: slug.toLowerCase(),
+          searchName: name.toLowerCase(),
+          searchProvider: option.label.toLowerCase(),
+        })),
+      ),
+    [availableProviderOptions, lockedProvider, modelOptionsByProvider],
+  );
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -1325,9 +1345,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => new Set(nonPersistedComposerImageIds),
     [nonPersistedComposerImageIds],
   );
-  const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
-  const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
-  const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
   const activeProvider = activeThread?.session?.provider ?? "codex";
   const activeProviderStatus = useMemo(
     () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
@@ -3716,6 +3733,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     provider={selectedProvider}
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
+                    providerOptions={providerOptions}
                     modelOptionsByProvider={modelOptionsByProvider}
                     serviceTierSetting={selectedServiceTierSetting}
                     onProviderModelChange={onProviderModelSelect}
@@ -5382,16 +5400,6 @@ const MessagesTimeline = memo(function MessagesTimeline({
   );
 });
 
-function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
-  value: ProviderKind;
-  label: string;
-  available: true;
-} {
-  return option.available && option.value !== "claudeCode";
-}
-
-const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);
-const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter((option) => !option.available);
 const COMING_SOON_PROVIDER_OPTIONS = [
   { id: "opencode", label: "OpenCode", icon: OpenCodeIcon },
   { id: "gemini", label: "Gemini", icon: Gemini },
@@ -5497,6 +5505,11 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   provider: ProviderKind;
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
+  providerOptions: ReadonlyArray<{
+    value: ProviderPickerKind;
+    label: string;
+    available: boolean;
+  }>;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
   serviceTierSetting: AppServiceTier;
   disabled?: boolean;
@@ -5531,7 +5544,8 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground/70" />
-          {props.provider === "codex" && shouldShowFastTierIcon(props.model, props.serviceTierSetting) ? (
+          {props.provider === "codex" &&
+          shouldShowFastTierIcon(props.model, props.serviceTierSetting) ? (
             <ZapIcon className="size-3.5 shrink-0 text-amber-500" />
           ) : null}
           <span className="truncate">{selectedModelLabel}</span>
@@ -5539,7 +5553,17 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         </span>
       </MenuTrigger>
       <MenuPopup align="start">
-        {AVAILABLE_PROVIDER_OPTIONS.map((option) => {
+        {props.providerOptions
+          .filter(
+            (
+              option,
+            ): option is {
+              value: ProviderKind;
+              label: string;
+              available: true;
+            } => option.available && option.value !== "claudeCode" && option.value !== "cursor",
+          )
+          .map((option) => {
           const OptionIcon = PROVIDER_ICON_BY_PROVIDER[option.value];
           const isDisabledByProviderLock =
             props.lockedProvider !== null && props.lockedProvider !== option.value;
@@ -5589,9 +5613,10 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             </MenuSub>
           );
         })}
-        {UNAVAILABLE_PROVIDER_OPTIONS.length > 0 && <MenuDivider />}
-        {UNAVAILABLE_PROVIDER_OPTIONS.map((option) => {
+        {props.providerOptions.some((option) => !option.available) && <MenuDivider />}
+        {props.providerOptions.filter((option) => !option.available).map((option) => {
           const OptionIcon = PROVIDER_ICON_BY_PROVIDER[option.value];
+          const isComingSoon = option.value === "claudeCode" || option.value === "cursor";
           return (
             <MenuItem key={option.value} disabled>
               <OptionIcon
@@ -5603,12 +5628,12 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               />
               <span>{option.label}</span>
               <span className="ms-auto text-[11px] text-muted-foreground/80 uppercase tracking-[0.08em]">
-                Coming soon
+                {isComingSoon ? "Coming soon" : "Unavailable"}
               </span>
             </MenuItem>
           );
         })}
-        {UNAVAILABLE_PROVIDER_OPTIONS.length === 0 && <MenuDivider />}
+        {!props.providerOptions.some((option) => !option.available) && <MenuDivider />}
         {COMING_SOON_PROVIDER_OPTIONS.map((option) => {
           const OptionIcon = option.icon;
           return (
