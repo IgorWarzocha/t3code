@@ -384,26 +384,6 @@ function mapManagerEventToRuntimeEvents(
               },
             ];
           }
-          if (assistantType === "done") {
-            const assistantText = extractPiAssistantText(payload.message);
-            if (!assistantText) {
-              return [];
-            }
-            return [
-              {
-                type: "content.delta",
-                ...makeEventBase({
-                  threadId: event.threadId,
-                  ...(event.turnId ? { turnId: event.turnId } : {}),
-                  itemId: assistantItem,
-                }),
-                payload: {
-                  streamKind: "assistant_text",
-                  delta: assistantText,
-                },
-              },
-            ];
-          }
           return [];
         }
         case "message_end": {
@@ -494,29 +474,6 @@ function mapManagerEventToRuntimeEvents(
             },
           });
           return completedEvents;
-        }
-        case "agent_end": {
-          const messages = Array.isArray(payload.messages) ? payload.messages : [];
-          let assistantMessage: unknown = null;
-          for (let index = messages.length - 1; index >= 0; index -= 1) {
-            const message = messages[index];
-            if (asString(asRecord(message)?.role) === "assistant") {
-              assistantMessage = message;
-              break;
-            }
-          }
-          const assistantTurnId = assistantTurnKey(event.threadId, event.turnId);
-          if (!assistantMessage || completedAssistantTurns.has(assistantTurnId)) {
-            return [];
-          }
-          completedAssistantTurns.add(assistantTurnId);
-          return [
-            completeAssistantMessageEvent({
-              threadId: event.threadId,
-              turnId: event.turnId,
-              message: assistantMessage,
-            }),
-          ];
         }
         default:
           return [];
