@@ -6,6 +6,7 @@ import {
 import readline from "node:readline";
 
 import {
+  type PiThinkingLevel,
   type ProviderSession,
   RuntimeMode,
   type ServerProviderModelCatalogEntry,
@@ -13,6 +14,7 @@ import {
   TurnId,
   type ProviderTurnStartResult,
 } from "@t3tools/contracts";
+import { normalizePiThinkingLevel } from "@t3tools/shared/model";
 
 import type {
   ProviderThreadSnapshot,
@@ -29,7 +31,8 @@ type PiRpcCommand =
     }> }
   | { id?: string; type: "abort" }
   | { id?: string; type: "switch_session"; sessionPath: string }
-  | { id?: string; type: "set_model"; provider: string; modelId: string };
+  | { id?: string; type: "set_model"; provider: string; modelId: string }
+  | { id?: string; type: "set_thinking_level"; level: PiThinkingLevel };
 
 type PiRpcResponse = {
   id?: string;
@@ -75,6 +78,7 @@ export interface PiRpcManagerStartSessionInput {
   readonly cwd?: string;
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
+  readonly thinkingLevel?: PiThinkingLevel;
   readonly resumeCursor?: unknown;
   readonly providerOptions?: {
     readonly pi?: {
@@ -88,6 +92,7 @@ export interface PiRpcManagerSendTurnInput {
   readonly threadId: ThreadId;
   readonly input?: string;
   readonly model?: string;
+  readonly thinkingLevel?: PiThinkingLevel;
   readonly images?: ReadonlyArray<{
     readonly type: "image";
     readonly data: string;
@@ -114,6 +119,7 @@ interface PiRpcSessionState {
   cwd: string | undefined;
   runtimeMode: RuntimeMode;
   model: string | undefined;
+  thinkingLevel: PiThinkingLevel | undefined;
   resumeCursor: unknown;
   sessionFile: string | undefined;
   sessionId: string | undefined;
@@ -126,6 +132,7 @@ interface PiRpcSessionState {
 
 type PiRpcStateResponse = {
   readonly model?: Record<string, unknown> | null;
+  readonly thinkingLevel?: string;
   readonly isStreaming?: boolean;
   readonly sessionFile?: string;
   readonly sessionId?: string;
@@ -172,10 +179,12 @@ function buildResumeCursor(input: {
   readonly state: PiRpcStateResponse | undefined;
 }) {
   const parsedModel = parsePiModelSlug(input.model);
+  const thinkingLevel = normalizePiThinkingLevel(input.state?.thinkingLevel);
   return {
     ...(input.state?.sessionFile ? { sessionFile: input.state.sessionFile } : {}),
     ...(input.state?.sessionId ? { sessionId: input.state.sessionId } : {}),
     ...(parsedModel ? { modelProvider: parsedModel.provider, modelId: parsedModel.modelId } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}),
     ...(input.cwd ? { cwd: input.cwd } : {}),
   };
 }
@@ -194,6 +203,13 @@ function modelFromState(
     return `${provider}/${modelId}`;
   }
   return fallback;
+}
+
+function thinkingLevelFromState(
+  state: PiRpcStateResponse | undefined,
+  fallback: PiThinkingLevel | undefined,
+): PiThinkingLevel | undefined {
+  return normalizePiThinkingLevel(state?.thinkingLevel) ?? fallback;
 }
 
 function parseCatalogModel(value: unknown): PiRpcCatalogModel | null {
@@ -346,6 +362,7 @@ export class PiRpcManager {
       cwd: input.cwd,
       runtimeMode: input.runtimeMode,
       model: input.model,
+      thinkingLevel: input.thinkingLevel,
       resumeCursor: input.resumeCursor,
       sessionFile: undefined,
       sessionId: undefined,
@@ -500,24 +517,18 @@ export class PiRpcManager {
     }
 
     if (input.model) {
-      const parsedModel = parsePiModelSlug(input.model);
-      if (!parsedModel) {
-        throw new Error(
-          `Pi models must use 'provider/modelId' format. Received '${input.model}'.`,
-        );
-      }
-      await this.sendCommand(session, {
-        type: "set_model",
-        provider: parsedModel.provider,
-        modelId: parsedModel.modelId,
-      });
-      session.model = input.model;
+      await this.setModel(session, input.model);
+    }
+
+    if (input.thinkingLevel) {
+      await this.setThinkingLevel(session, input.thinkingLevel);
     }
 
     const state = await this.getState(session);
     session.sessionFile = state.sessionFile;
     session.sessionId = state.sessionId;
     session.model = modelFromState(state, session.model);
+    session.thinkingLevel = thinkingLevelFromState(state, session.thinkingLevel);
     session.resumeCursor = buildResumeCursor({
       cwd: session.cwd,
       model: session.model,
@@ -535,18 +546,11 @@ export class PiRpcManager {
     }
 
     if (input.model && input.model !== session.model) {
-      const parsedModel = parsePiModelSlug(input.model);
-      if (!parsedModel) {
-        throw new Error(
-          `Pi models must use 'provider/modelId' format. Received '${input.model}'.`,
-        );
-      }
-      await this.sendCommand(session, {
-        type: "set_model",
-        provider: parsedModel.provider,
-        modelId: parsedModel.modelId,
-      });
-      session.model = input.model;
+      await this.setModel(session, input.model);
+    }
+
+    if (input.thinkingLevel && input.thinkingLevel !== session.thinkingLevel) {
+      await this.setThinkingLevel(session, input.thinkingLevel);
     }
 
     const turnId = TurnId.makeUnsafe(randomUUID());
@@ -560,6 +564,8 @@ export class PiRpcManager {
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
     });
     const state = await this.getState(session);
+    session.model = modelFromState(state, session.model);
+    session.thinkingLevel = thinkingLevelFromState(state, session.thinkingLevel);
     session.resumeCursor = buildResumeCursor({
       cwd: session.cwd,
       model: session.model,
@@ -581,6 +587,32 @@ export class PiRpcManager {
     session.abortRequested = true;
     session.updatedAt = new Date().toISOString();
     await this.sendCommand(session, { type: "abort" });
+  }
+
+  private async setModel(session: PiRpcSessionState, model: string): Promise<void> {
+    const parsedModel = parsePiModelSlug(model);
+    if (!parsedModel) {
+      throw new Error(
+        `Pi models must use 'provider/modelId' format. Received '${model}'.`,
+      );
+    }
+    await this.sendCommand(session, {
+      type: "set_model",
+      provider: parsedModel.provider,
+      modelId: parsedModel.modelId,
+    });
+    session.model = model;
+  }
+
+  private async setThinkingLevel(
+    session: PiRpcSessionState,
+    thinkingLevel: PiThinkingLevel,
+  ): Promise<void> {
+    await this.sendCommand(session, {
+      type: "set_thinking_level",
+      level: thinkingLevel,
+    });
+    session.thinkingLevel = thinkingLevel;
   }
 
   listSessions(): ReadonlyArray<ProviderSession> {

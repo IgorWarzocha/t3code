@@ -4,11 +4,12 @@ import {
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
   ThreadId,
   type CodexReasoningEffort,
+  type PiThinkingLevel,
   type ProviderKind,
   type ProviderInteractionMode,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { normalizeModelSlug, normalizePiThinkingLevel } from "@t3tools/shared/model";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -42,6 +43,7 @@ interface PersistedComposerThreadDraftState {
   interactionMode?: ProviderInteractionMode | null;
   effort?: CodexReasoningEffort | null;
   codexFastMode?: boolean | null;
+  piThinkingLevel?: PiThinkingLevel | null;
   serviceTier?: string | null;
 }
 
@@ -72,6 +74,7 @@ interface ComposerThreadDraftState {
   interactionMode: ProviderInteractionMode | null;
   effort: CodexReasoningEffort | null;
   codexFastMode: boolean;
+  piThinkingLevel: PiThinkingLevel | null;
 }
 
 export interface DraftThreadState {
@@ -131,6 +134,7 @@ interface ComposerDraftStoreState {
   ) => void;
   setEffort: (threadId: ThreadId, effort: CodexReasoningEffort | null | undefined) => void;
   setCodexFastMode: (threadId: ThreadId, enabled: boolean | null | undefined) => void;
+  setPiThinkingLevel: (threadId: ThreadId, thinkingLevel: PiThinkingLevel | null | undefined) => void;
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
   removeImage: (threadId: ThreadId, imageId: string) => void;
@@ -166,6 +170,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze({
   interactionMode: null,
   effort: null,
   codexFastMode: false,
+  piThinkingLevel: null,
 }) as ComposerThreadDraftState;
 
 const REASONING_EFFORT_VALUES = new Set<CodexReasoningEffort>(
@@ -184,6 +189,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     interactionMode: null,
     effort: null,
     codexFastMode: false,
+    piThinkingLevel: null,
   };
 }
 
@@ -203,7 +209,8 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.runtimeMode === null &&
     draft.interactionMode === null &&
     draft.effort === null &&
-    draft.codexFastMode === false
+    draft.codexFastMode === false &&
+    draft.piThinkingLevel === null
   );
 }
 
@@ -389,6 +396,9 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     const codexFastMode =
       draftCandidate.codexFastMode === true ||
       (typeof draftCandidate.serviceTier === "string" && draftCandidate.serviceTier === "fast");
+    const piThinkingLevel = normalizePiThinkingLevel(
+      typeof draftCandidate.piThinkingLevel === "string" ? draftCandidate.piThinkingLevel : null,
+    );
     if (
       prompt.length === 0 &&
       attachments.length === 0 &&
@@ -397,7 +407,8 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       !runtimeMode &&
       !interactionMode &&
       !effort &&
-      !codexFastMode
+      !codexFastMode &&
+      !piThinkingLevel
     ) {
       continue;
     }
@@ -410,6 +421,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       ...(interactionMode ? { interactionMode } : {}),
       ...(effort ? { effort } : {}),
       ...(codexFastMode ? { codexFastMode } : {}),
+      ...(piThinkingLevel ? { piThinkingLevel } : {}),
     };
   }
   return {
@@ -517,6 +529,7 @@ function toHydratedThreadDraft(
     interactionMode: persistedDraft.interactionMode ?? null,
     effort: persistedDraft.effort ?? null,
     codexFastMode: persistedDraft.codexFastMode === true,
+    piThinkingLevel: persistedDraft.piThinkingLevel ?? null,
   };
 }
 
@@ -948,6 +961,33 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
+      setPiThinkingLevel: (threadId, thinkingLevel) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        const nextThinkingLevel = normalizePiThinkingLevel(thinkingLevel);
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId];
+          if (!existing && nextThinkingLevel === null) {
+            return state;
+          }
+          const base = existing ?? createEmptyThreadDraft();
+          if (base.piThinkingLevel === nextThinkingLevel) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...base,
+            piThinkingLevel: nextThinkingLevel,
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
       addImage: (threadId, image) => {
         if (threadId.length === 0) {
           return;
@@ -1185,7 +1225,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             draft.runtimeMode === null &&
             draft.interactionMode === null &&
             draft.effort === null &&
-            draft.codexFastMode === false
+            draft.codexFastMode === false &&
+            draft.piThinkingLevel === null
           ) {
             continue;
           }
@@ -1210,6 +1251,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           if (draft.codexFastMode) {
             persistedDraft.codexFastMode = true;
+          }
+          if (draft.piThinkingLevel) {
+            persistedDraft.piThinkingLevel = draft.piThinkingLevel;
           }
           persistedDraftsByThreadId[threadId as ThreadId] = persistedDraft;
         }

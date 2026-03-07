@@ -6,6 +6,7 @@ import {
   type KeybindingCommand,
   type CodexReasoningEffort,
   type MessageId,
+  type PiThinkingLevel,
   type ProjectId,
   type ProjectEntry,
   type ProjectScript,
@@ -26,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 import {
   getDefaultModel,
+  getPiThinkingLevelOptions,
   getDefaultReasoningEffort,
   getReasoningEffortOptions,
   normalizeModelSlug,
@@ -628,6 +630,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const setComposerDraftEffort = useComposerDraftStore((store) => store.setEffort);
   const setComposerDraftCodexFastMode = useComposerDraftStore((store) => store.setCodexFastMode);
+  const setComposerDraftPiThinkingLevel = useComposerDraftStore(
+    (store) => store.setPiThinkingLevel,
+  );
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
@@ -854,16 +859,32 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const selectedEffort = composerDraft.effort ?? getDefaultReasoningEffort(selectedProvider);
   const selectedCodexFastModeEnabled =
     selectedProvider === "codex" ? composerDraft.codexFastMode : false;
+  const piThinkingLevelOptions = getPiThinkingLevelOptions();
+  const selectedPiThinkingLevel =
+    selectedProvider === "pi" ? composerDraft.piThinkingLevel : null;
   const selectedModelOptionsForDispatch = useMemo(() => {
-    if (selectedProvider !== "codex") {
-      return undefined;
+    if (selectedProvider === "codex") {
+      const codexOptions = {
+        ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
+        ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
+      };
+      return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
     }
-    const codexOptions = {
-      ...(supportsReasoningEffort && selectedEffort ? { reasoningEffort: selectedEffort } : {}),
-      ...(selectedCodexFastModeEnabled ? { fastMode: true } : {}),
-    };
-    return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
-  }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
+    if (selectedProvider === "pi" && selectedPiThinkingLevel) {
+      return {
+        pi: {
+          thinkingLevel: selectedPiThinkingLevel,
+        },
+      };
+    }
+    return undefined;
+  }, [
+    selectedCodexFastModeEnabled,
+    selectedEffort,
+    selectedPiThinkingLevel,
+    selectedProvider,
+    supportsReasoningEffort,
+  ]);
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
     () => getCustomModelOptionsByProvider(settings, providerModels),
@@ -1647,6 +1668,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
+      if (selectedProvider === "pi" && mode !== "full-access") {
+        scheduleComposerFocus();
+        return;
+      }
       if (mode === runtimeMode) return;
       setComposerDraftRuntimeMode(threadId, mode);
       if (isLocalDraftThread) {
@@ -1657,6 +1682,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [
       isLocalDraftThread,
       runtimeMode,
+      selectedProvider,
       scheduleComposerFocus,
       setComposerDraftRuntimeMode,
       setDraftThreadContext,
@@ -3114,15 +3140,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
           getDiscoveredDefaultModelForProvider(providerModels, provider),
         ),
       );
+      if (provider === "pi") {
+        setComposerDraftRuntimeMode(activeThread.id, "full-access");
+        if (isLocalDraftThread) {
+          setDraftThreadContext(activeThread.id, { runtimeMode: "full-access" });
+        }
+      }
       scheduleComposerFocus();
     },
     [
       activeThread,
+      isLocalDraftThread,
       lockedProvider,
       providerModels,
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
+      setComposerDraftRuntimeMode,
+      setDraftThreadContext,
       settings,
     ],
   );
@@ -3139,6 +3174,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
       scheduleComposerFocus();
     },
     [scheduleComposerFocus, setComposerDraftCodexFastMode, threadId],
+  );
+  const onPiThinkingLevelChange = useCallback(
+    (thinkingLevel: PiThinkingLevel | null) => {
+      setComposerDraftPiThinkingLevel(threadId, thinkingLevel);
+      scheduleComposerFocus();
+    },
+    [scheduleComposerFocus, setComposerDraftPiThinkingLevel, threadId],
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
@@ -3692,6 +3734,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     </>
                   ) : null}
 
+                  {selectedProvider === "pi" ? (
+                    <>
+                      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+                      <PiTraitsPicker
+                        thinkingLevel={selectedPiThinkingLevel}
+                        options={piThinkingLevelOptions}
+                        onThinkingLevelChange={onPiThinkingLevelChange}
+                      />
+                    </>
+                  ) : null}
+
                   {/* Divider */}
                   <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
 
@@ -3723,15 +3776,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
                     size="sm"
                     type="button"
+                    disabled={selectedProvider === "pi"}
                     onClick={() =>
                       void handleRuntimeModeChange(
                         runtimeMode === "full-access" ? "approval-required" : "full-access",
                       )
                     }
                     title={
-                      runtimeMode === "full-access"
-                        ? "Full access — click to require approvals"
-                        : "Approval required — click for full access"
+                      selectedProvider === "pi"
+                        ? "Pi currently requires full access"
+                        : runtimeMode === "full-access"
+                          ? "Full access — click to require approvals"
+                          : "Approval required — click for full access"
                     }
                   >
                     {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
@@ -5642,6 +5698,72 @@ const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
           >
             <MenuRadioItem value="off">off</MenuRadioItem>
             <MenuRadioItem value="on">on</MenuRadioItem>
+          </MenuRadioGroup>
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
+  );
+});
+
+const PiTraitsPicker = memo(function PiTraitsPicker(props: {
+  thinkingLevel: PiThinkingLevel | null;
+  options: ReadonlyArray<PiThinkingLevel>;
+  onThinkingLevelChange: (thinkingLevel: PiThinkingLevel | null) => void;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const thinkingLabelByOption: Record<PiThinkingLevel, string> = {
+    off: "Off",
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra High",
+  };
+  const triggerLabel = props.thinkingLevel
+    ? `Thinking · ${thinkingLabelByOption[props.thinkingLevel]}`
+    : "Thinking · Default";
+
+  return (
+    <Menu
+      open={isMenuOpen}
+      onOpenChange={(open) => {
+        setIsMenuOpen(open);
+      }}
+    >
+      <MenuTrigger
+        render={
+          <Button
+            size="sm"
+            variant="ghost"
+            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+          />
+        }
+      >
+        <span>{triggerLabel}</span>
+        <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        <MenuGroup>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Thinking</div>
+          <MenuRadioGroup
+            value={props.thinkingLevel ?? "default"}
+            onValueChange={(value) => {
+              if (!value) return;
+              if (value === "default") {
+                props.onThinkingLevelChange(null);
+                return;
+              }
+              const nextThinkingLevel = props.options.find((option) => option === value);
+              if (!nextThinkingLevel) return;
+              props.onThinkingLevelChange(nextThinkingLevel);
+            }}
+          >
+            <MenuRadioItem value="default">Use Pi default</MenuRadioItem>
+            {props.options.map((thinkingLevel) => (
+              <MenuRadioItem key={thinkingLevel} value={thinkingLevel}>
+                {thinkingLabelByOption[thinkingLevel]}
+              </MenuRadioItem>
+            ))}
           </MenuRadioGroup>
         </MenuGroup>
       </MenuPopup>

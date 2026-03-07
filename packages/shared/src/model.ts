@@ -4,8 +4,10 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   MODEL_OPTIONS_BY_PROVIDER,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
+  PI_THINKING_LEVEL_OPTIONS,
   type CodexReasoningEffort,
   type ModelSlug,
+  type PiThinkingLevel,
   type ProviderKind,
 } from "@t3tools/contracts";
 
@@ -88,6 +90,25 @@ export function getDefaultReasoningEffort(
   provider: ProviderKind = "codex",
 ): CodexReasoningEffort | null {
   return DEFAULT_REASONING_EFFORT_BY_PROVIDER[provider];
+}
+
+export function getPiThinkingLevelOptions(): ReadonlyArray<PiThinkingLevel> {
+  return PI_THINKING_LEVEL_OPTIONS;
+}
+
+export function normalizePiThinkingLevel(
+  value: string | null | undefined,
+): PiThinkingLevel | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return PI_THINKING_LEVEL_OPTIONS.find((option) => option === trimmed) ?? null;
 }
 
 export { CODEX_REASONING_EFFORT_OPTIONS };

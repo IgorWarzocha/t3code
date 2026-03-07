@@ -93,6 +93,10 @@ function piModelFromResumeCursor(resumeCursor: unknown): string | undefined {
   return provider && modelId ? `${provider}/${modelId}` : undefined;
 }
 
+function piThinkingLevelFromResumeCursor(resumeCursor: unknown): string | undefined {
+  return asString(asRecord(resumeCursor)?.thinkingLevel);
+}
+
 function makeEventBase(input: {
   readonly threadId: ThreadId;
   readonly turnId?: TurnId;
@@ -125,6 +129,52 @@ function summarizeUnknown(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function collectPiTextFragments(value: unknown): string[] {
+  if (typeof value === "string") {
+    return value.length > 0 ? [value] : [];
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectPiTextFragments(entry));
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record.type === "text") {
+    const text = asString(record.text);
+    return text && text.length > 0 ? [text] : [];
+  }
+  if (record.type === "thinking" || record.type === "redacted_thinking") {
+    return [];
+  }
+
+  if ("content" in record) {
+    return collectPiTextFragments(record.content);
+  }
+
+  return [];
+}
+
+function extractPiAssistantText(message: unknown): string | undefined {
+  const record = asRecord(message);
+  if (!record) {
+    return summarizeUnknown(message);
+  }
+
+  const content = collectPiTextFragments(record.content);
+  if (content.length > 0) {
+    const text = content.join("");
+    return text.trim().length > 0 ? text : undefined;
+  }
+
+  return summarizeUnknown(record.content) ?? summarizeUnknown(record);
+}
+
+function assistantTurnKey(threadId: ThreadId, turnId?: TurnId): string {
+  return `${threadId}:${turnId ?? "session"}`;
 }
 
 function assistantItemId(threadId: ThreadId, turnId?: TurnId): string {
@@ -169,6 +219,7 @@ function toolLifecycleEvent<TType extends "item.started" | "item.updated" | "ite
 function mapManagerEventToRuntimeEvents(
   event: PiRpcManagerEvent,
   abortingTurnIds: Map<ThreadId, string>,
+  completedAssistantTurns: Set<string>,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   switch (event.kind) {
     case "stderr":
@@ -230,6 +281,7 @@ function mapManagerEventToRuntimeEvents(
       const payload = event.payload;
       switch (payload.type) {
         case "turn_start":
+          completedAssistantTurns.delete(assistantTurnKey(event.threadId, event.turnId));
           return [
             {
               type: "turn.started",
@@ -305,6 +357,31 @@ function mapManagerEventToRuntimeEvents(
           }
           return [];
         }
+        case "message_end": {
+          const message = asRecord(payload.message);
+          if (asString(message?.role) !== "assistant") {
+            return [];
+          }
+          completedAssistantTurns.add(assistantTurnKey(event.threadId, event.turnId));
+          const assistantText = extractPiAssistantText(message);
+          return [
+            {
+              type: "item.completed",
+              ...makeEventBase({
+                threadId: event.threadId,
+                ...(event.turnId ? { turnId: event.turnId } : {}),
+                itemId: assistantItemId(event.threadId, event.turnId),
+              }),
+              payload: {
+                itemType: "assistant_message",
+                status: "completed",
+                title: "Assistant message",
+                ...(assistantText ? { detail: assistantText } : {}),
+                data: payload.message,
+              },
+            },
+          ];
+        }
         case "tool_execution_start":
           return [
             toolLifecycleEvent({
@@ -349,22 +426,26 @@ function mapManagerEventToRuntimeEvents(
         case "turn_end": {
           const completedEvents: ProviderRuntimeEvent[] = [];
           const assistantMessage = asRecord(payload.message);
-          const assistantText = summarizeUnknown(assistantMessage?.content) ?? summarizeUnknown(assistantMessage);
-          completedEvents.push({
-            type: "item.completed",
-            ...makeEventBase({
-              threadId: event.threadId,
-              ...(event.turnId ? { turnId: event.turnId } : {}),
-              itemId: assistantItemId(event.threadId, event.turnId),
-            }),
-            payload: {
-              itemType: "assistant_message",
-              status: "completed",
-              title: "Assistant message",
-              ...(assistantText ? { detail: assistantText } : {}),
-              data: payload.message,
-            },
-          });
+          const assistantTurnId = assistantTurnKey(event.threadId, event.turnId);
+          if (!completedAssistantTurns.has(assistantTurnId)) {
+            const assistantText = extractPiAssistantText(assistantMessage);
+            completedEvents.push({
+              type: "item.completed",
+              ...makeEventBase({
+                threadId: event.threadId,
+                ...(event.turnId ? { turnId: event.turnId } : {}),
+                itemId: assistantItemId(event.threadId, event.turnId),
+              }),
+              payload: {
+                itemType: "assistant_message",
+                status: "completed",
+                title: "Assistant message",
+                ...(assistantText ? { detail: assistantText } : {}),
+                data: payload.message,
+              },
+            });
+          }
+          completedAssistantTurns.delete(assistantTurnId);
 
           const abortingTurnId = abortingTurnIds.get(event.threadId);
           const interrupted =
@@ -417,15 +498,16 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
 
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const abortingTurnIds = new Map<ThreadId, string>();
+    const completedAssistantTurns = new Set<string>();
 
     yield* Effect.acquireRelease(
       Effect.gen(function* () {
         const services = yield* Effect.services<never>();
         const unsubscribe = manager.subscribe((event) =>
-          Queue.offerAll(runtimeEventQueue, mapManagerEventToRuntimeEvents(event, abortingTurnIds)).pipe(
-            Effect.asVoid,
-            Effect.runPromiseWith(services),
-          ),
+          Queue.offerAll(
+            runtimeEventQueue,
+            mapManagerEventToRuntimeEvents(event, abortingTurnIds, completedAssistantTurns),
+          ).pipe(Effect.asVoid, Effect.runPromiseWith(services)),
         );
         return unsubscribe;
       }),
@@ -454,6 +536,9 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
         runtimeMode: input.runtimeMode,
         ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
         ...(input.model !== undefined ? { model: input.model } : {}),
+        ...(input.modelOptions?.pi?.thinkingLevel !== undefined
+          ? { thinkingLevel: input.modelOptions.pi.thinkingLevel }
+          : {}),
         ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         ...(input.providerOptions?.pi !== undefined
           ? {
@@ -500,6 +585,9 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
                   ...(session.cwd ? { cwd: session.cwd } : {}),
                   ...(piModelFromResumeCursor(session.resumeCursor) ?? session.model
                     ? { model: piModelFromResumeCursor(session.resumeCursor) ?? session.model }
+                    : {}),
+                  ...(piThinkingLevelFromResumeCursor(session.resumeCursor)
+                    ? { thinkingLevel: piThinkingLevelFromResumeCursor(session.resumeCursor) }
                     : {}),
                 },
               },
@@ -555,6 +643,9 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
               threadId: input.threadId,
               ...(input.input !== undefined ? { input: input.input } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
+              ...(input.modelOptions?.pi?.thinkingLevel !== undefined
+                ? { thinkingLevel: input.modelOptions.pi.thinkingLevel }
+                : {}),
               ...(images.length > 0 ? { images } : {}),
             }),
           catch: (cause) => toRequestError(input.threadId, "turn/prompt", cause),
