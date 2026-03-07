@@ -3736,6 +3736,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
                     providerOptions={providerOptions}
+                    providerStartOptions={providerStartOptions}
+                    customPiModels={settings.customPiModels}
                     modelOptionsByProvider={modelOptionsByProvider}
                     serviceTierSetting={selectedServiceTierSetting}
                     onProviderModelChange={onProviderModelSelect}
@@ -5507,6 +5509,8 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   provider: ProviderKind;
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
+  providerStartOptions: ProviderStartOptions | undefined;
+  customPiModels: readonly string[];
   providerOptions: ReadonlyArray<{
     value: ProviderPickerKind;
     label: string;
@@ -5518,7 +5522,33 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const selectedProviderOptions = props.modelOptionsByProvider[props.provider];
+  const piProviderModelsQuery = useQuery({
+    ...serverProviderModelsQueryOptions("pi", props.providerStartOptions),
+    enabled: isMenuOpen || props.provider === "pi",
+  });
+  const effectiveModelOptionsByProvider = useMemo(() => {
+    const discoveredPiModels = getDiscoveredModelsForProvider(piProviderModelsQuery.data, "pi");
+    if (discoveredPiModels.length === 0) {
+      return props.modelOptionsByProvider;
+    }
+
+    return {
+      ...props.modelOptionsByProvider,
+      pi: getAppModelOptions(
+        "pi",
+        props.customPiModels,
+        props.provider === "pi" ? props.model : undefined,
+        discoveredPiModels,
+      ),
+    } satisfies Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
+  }, [
+    piProviderModelsQuery.data,
+    props.customPiModels,
+    props.model,
+    props.modelOptionsByProvider,
+    props.provider,
+  ]);
+  const selectedProviderOptions = effectiveModelOptionsByProvider[props.provider];
   const selectedModelLabel =
     selectedProviderOptions.find((option) => option.slug === props.model)?.name ?? props.model;
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[props.provider];
@@ -5589,14 +5619,14 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                       const resolvedModel = resolveModelForProviderPicker(
                         option.value,
                         value,
-                        props.modelOptionsByProvider[option.value],
+                        effectiveModelOptionsByProvider[option.value],
                       );
                       if (!resolvedModel) return;
                       props.onProviderModelChange(option.value, resolvedModel);
                       setIsMenuOpen(false);
                     }}
                   >
-                    {props.modelOptionsByProvider[option.value].map((modelOption) => (
+                    {effectiveModelOptionsByProvider[option.value].map((modelOption) => (
                       <MenuRadioItem
                         key={`${option.value}:${modelOption.slug}`}
                         value={modelOption.slug}
@@ -5610,6 +5640,9 @@ const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                       </MenuRadioItem>
                     ))}
                   </MenuRadioGroup>
+                  {effectiveModelOptionsByProvider[option.value].length === 0 ? (
+                    <MenuItem disabled>No models available</MenuItem>
+                  ) : null}
                 </MenuGroup>
               </MenuSubPopup>
             </MenuSub>

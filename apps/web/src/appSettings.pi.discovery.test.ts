@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import { getAppModelOptions, resolveAppModelSelection } from "./appSettings";
 
 describe("Pi discovered model helpers", () => {
+  it("does not expose a static Pi fallback model when discovery is empty", () => {
+    expect(getAppModelOptions("pi", [], undefined, [])).toEqual([]);
+  });
+
   it("prefers discovered Pi models over the static fallback list", () => {
     const options = getAppModelOptions(
       "pi",

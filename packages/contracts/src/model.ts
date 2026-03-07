@@ -43,9 +43,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "gpt-5.2-codex", name: "GPT-5.2 Codex" },
     { slug: "gpt-5.2", name: "GPT-5.2" },
   ],
-  pi: [
-    { slug: "openai/gpt-5", name: "OpenAI GPT-5" },
-  ],
+  pi: [] as readonly ModelOption[],
 } as const satisfies Record<ProviderKind, readonly ModelOption[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 

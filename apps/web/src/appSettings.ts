@@ -157,8 +157,7 @@ export function getAppModelOptions(
   selectedModel?: string | null,
   discoveredModels: readonly DiscoveredModel[] = [],
 ): AppModelOption[] {
-  const baseOptionsSource =
-    provider === "pi" && discoveredModels.length > 0 ? discoveredModels : getModelOptions(provider);
+  const baseOptionsSource = provider === "pi" ? discoveredModels : getModelOptions(provider);
   const options: AppModelOption[] = baseOptionsSource.map(({ slug, name }) => ({
     slug,
     name,
