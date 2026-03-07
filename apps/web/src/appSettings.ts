@@ -92,6 +92,14 @@ let listeners: Array<() => void> = [];
 let cachedRawSettings: string | null | undefined;
 let cachedSnapshot: AppSettings = DEFAULT_APP_SETTINGS;
 
+function isValidCustomModelSlug(provider: ProviderKind, model: string): boolean {
+  if (provider !== "pi") {
+    return true;
+  }
+  const slashIndex = model.indexOf("/");
+  return slashIndex > 0 && slashIndex < model.length - 1;
+}
+
 export function normalizeCustomModelSlugs(
   models: Iterable<string | null | undefined>,
   provider: ProviderKind = "codex",
@@ -105,6 +113,7 @@ export function normalizeCustomModelSlugs(
     if (
       !normalized ||
       normalized.length > MAX_CUSTOM_MODEL_LENGTH ||
+      !isValidCustomModelSlug(provider, normalized) ||
       builtInModelSlugs.has(normalized) ||
       seen.has(normalized)
     ) {

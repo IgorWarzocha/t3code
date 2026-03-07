@@ -17,6 +17,15 @@ describe("Pi app settings model helpers", () => {
     ).toEqual(["anthropic/claude-sonnet-4-20250514"]);
   });
 
+  it("rejects invalid Pi custom model ids that are missing the provider prefix", () => {
+    expect(
+      normalizeCustomModelSlugs(
+        ["gpt-5.4", "/gpt-5.4", "openai/", "openai/gpt-5.4"],
+        "pi",
+      ),
+    ).toEqual(["openai/gpt-5.4"]);
+  });
+
   it("exposes Pi custom models through the picker and /model suggestions", () => {
     const options = getAppModelOptions("pi", ["anthropic/claude-sonnet-4-20250514"]);
     const slashOptions = getSlashModelOptions(

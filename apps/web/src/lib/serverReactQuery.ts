@@ -1,12 +1,12 @@
-import type { ProviderStartOptions } from "@t3tools/contracts";
+import type { ProviderKind, ProviderStartOptions } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { ensureNativeApi } from "~/nativeApi";
 
 export const serverQueryKeys = {
   all: ["server"] as const,
   config: () => ["server", "config"] as const,
-  providerModels: (providerOptions?: ProviderStartOptions) =>
-    ["server", "provider-models", providerOptions ?? null] as const,
+  providerModels: (provider?: ProviderKind, providerOptions?: ProviderStartOptions) =>
+    ["server", "provider-models", provider ?? null, providerOptions ?? null] as const,
 };
 
 export function serverConfigQueryOptions() {
@@ -20,14 +20,18 @@ export function serverConfigQueryOptions() {
   });
 }
 
-export function serverProviderModelsQueryOptions(providerOptions?: ProviderStartOptions) {
+export function serverProviderModelsQueryOptions(
+  provider?: ProviderKind,
+  providerOptions?: ProviderStartOptions,
+) {
   return queryOptions({
-    queryKey: serverQueryKeys.providerModels(providerOptions),
+    queryKey: serverQueryKeys.providerModels(provider, providerOptions),
     queryFn: async () => {
       const api = ensureNativeApi();
-      return api.server.getProviderModels(
-        providerOptions ? { providerOptions } : undefined,
-      );
+      return api.server.getProviderModels({
+        ...(provider ? { provider } : {}),
+        ...(providerOptions ? { providerOptions } : {}),
+      });
     },
     staleTime: 60_000,
   });

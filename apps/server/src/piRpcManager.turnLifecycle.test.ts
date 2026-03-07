@@ -354,4 +354,30 @@ describe("PiRpcManager turn lifecycle", () => {
       }),
     );
   });
+
+  it("cleans up a failed session when the Pi CLI cannot start", async () => {
+    spawnMock.mockImplementation(() => {
+      const child = createFakeChild();
+      queueMicrotask(() => {
+        child.emit("error", new Error("spawn pi ENOENT"));
+      });
+      return child as unknown as ChildProcessWithoutNullStreams;
+    });
+
+    const { PiRpcManager } = await import("./piRpcManager.ts");
+    const manager = new PiRpcManager();
+    const threadId = ThreadId.makeUnsafe("pi-spawn-error");
+
+    await expect(
+      manager.startSession({
+        threadId,
+        runtimeMode: "full-access",
+      }),
+    ).rejects.toThrow("Pi RPC process failed to start (spawn pi ENOENT).");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(manager.hasSession(threadId)).toBe(false);
+    expect(manager.listSessions()).toEqual([]);
+  });
 });

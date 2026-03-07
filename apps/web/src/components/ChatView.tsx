@@ -809,14 +809,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeThread.session !== null),
   );
   const providerStartOptions = useMemo(() => buildProviderStartOptions(settings), [settings]);
-  const providerModelsQuery = useQuery(serverProviderModelsQueryOptions(providerStartOptions));
-  const providerModels = providerModelsQuery.data;
   const selectedServiceTierSetting = settings.codexServiceTier;
   const selectedServiceTier = resolveAppServiceTier(selectedServiceTierSetting);
   const lockedProvider: ProviderKind | null = hasThreadStarted
     ? (sessionProvider ?? selectedProviderByThreadId ?? null)
     : null;
   const selectedProvider: ProviderKind = lockedProvider ?? selectedProviderByThreadId ?? "codex";
+  const providerModelsQuery = useQuery(
+    serverProviderModelsQueryOptions(selectedProvider, providerStartOptions),
+  );
+  const providerModels = providerModelsQuery.data;
   const customModelsForSelectedProvider = getCustomModelsForProvider(settings, selectedProvider);
   const discoveredModelsForSelectedProvider = getDiscoveredModelsForProvider(
     providerModels,

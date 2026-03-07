@@ -413,6 +413,25 @@ export class PiRpcManager {
       });
     });
 
+    child.on("error", (error) => {
+      session.status = "error";
+      session.updatedAt = new Date().toISOString();
+      this.clearPending(
+        session,
+        new Error(
+          `Pi RPC process failed to start (${error instanceof Error ? error.message : String(error)}).`,
+        ),
+      );
+      this.emit({
+        kind: "exit",
+        threadId: session.threadId,
+        ...(session.currentTurnId ? { turnId: session.currentTurnId } : {}),
+        code: null,
+        signal: null,
+        expected: false,
+      });
+    });
+
     child.on("exit", (code, signal) => {
       session.status = code === 0 || session.stopping ? "closed" : "error";
       session.updatedAt = new Date().toISOString();

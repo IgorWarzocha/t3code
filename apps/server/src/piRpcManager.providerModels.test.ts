@@ -143,4 +143,21 @@ describe("PiRpcManager model discovery", () => {
       }),
     );
   });
+
+  it("surfaces Pi CLI spawn failures during model discovery", async () => {
+    spawnMock.mockImplementation(() => {
+      const child = createFakeChild();
+      queueMicrotask(() => {
+        child.emit("error", new Error("spawn pi ENOENT"));
+      });
+      return child as unknown as ChildProcessWithoutNullStreams;
+    });
+
+    const { PiRpcManager } = await import("./piRpcManager.ts");
+    const manager = new PiRpcManager();
+
+    await expect(manager.discoverModels({ cwd: process.cwd() })).rejects.toThrow(
+      "Pi RPC process failed to start (spawn pi ENOENT).",
+    );
+  });
 });

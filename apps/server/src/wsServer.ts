@@ -892,9 +892,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.serverGetProviderModels: {
         const body = stripRequestTag(request.body);
-        return yield* providerModelCatalog.getCatalog(
-          body.providerOptions ? { providerOptions: body.providerOptions } : undefined,
-        );
+        return yield* providerModelCatalog.getCatalog({
+          ...(body.provider ? { provider: body.provider } : {}),
+          ...(body.providerOptions ? { providerOptions: body.providerOptions } : {}),
+        });
       }
 
       case WS_METHODS.serverUpsertKeybinding: {

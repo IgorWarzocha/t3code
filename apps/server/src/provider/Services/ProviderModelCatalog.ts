@@ -1,4 +1,5 @@
 import type {
+  ProviderKind,
   ProviderStartOptions,
   ServerProviderModelCatalog,
 } from "@t3tools/contracts";
@@ -7,6 +8,7 @@ import type { Effect } from "effect";
 
 export interface ProviderModelCatalogShape {
   readonly getCatalog: (input?: {
+    readonly provider?: ProviderKind | undefined;
     readonly providerOptions?: ProviderStartOptions | undefined;
   }) => Effect.Effect<ServerProviderModelCatalog>;
 }

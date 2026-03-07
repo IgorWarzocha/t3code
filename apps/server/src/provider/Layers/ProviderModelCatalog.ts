@@ -15,6 +15,10 @@ export const ProviderModelCatalogLive = Layer.effect(
 
     const getCatalog: ProviderModelCatalogShape["getCatalog"] = (input) =>
       Effect.tryPromise(async (): Promise<ServerProviderModelCatalog> => {
+        if (input?.provider !== "pi") {
+          return {};
+        }
+
         const piManager = new PiRpcManager();
         const piOptions = input?.providerOptions?.pi;
         const normalizedPiOptions =

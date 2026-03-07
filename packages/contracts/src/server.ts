@@ -64,6 +64,7 @@ export const ServerProviderModelCatalog = Schema.Struct({
 export type ServerProviderModelCatalog = typeof ServerProviderModelCatalog.Type;
 
 export const ServerGetProviderModelsInput = Schema.Struct({
+  provider: Schema.optional(ProviderKind),
   providerOptions: Schema.optional(ProviderStartOptions),
 });
 export type ServerGetProviderModelsInput = typeof ServerGetProviderModelsInput.Type;

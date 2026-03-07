@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer } from "effect";
 
@@ -13,8 +13,12 @@ const testLayer = ProviderModelCatalogLive.pipe(
 );
 
 describe("ProviderModelCatalogLive", () => {
-  it("returns Pi models from the discovery service", async () => {
-    vi.spyOn(PiRpcManager.prototype, "discoverModels").mockResolvedValueOnce({
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns Pi models from the discovery service when Pi is requested", async () => {
+    const discoverModelsSpy = vi.spyOn(PiRpcManager.prototype, "discoverModels").mockResolvedValueOnce({
       defaultModel: "openai-codex/gpt-5.3-codex",
       models: [
         {
@@ -27,10 +31,11 @@ describe("ProviderModelCatalogLive", () => {
     const catalog = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* Effect.service(ProviderModelCatalog);
-        return yield* service.getCatalog();
+        return yield* service.getCatalog({ provider: "pi" });
       }).pipe(Effect.provide(testLayer)),
     );
 
+    expect(discoverModelsSpy).toHaveBeenCalledOnce();
     expect(catalog).toEqual({
       pi: {
         defaultModel: "openai-codex/gpt-5.3-codex",
@@ -44,6 +49,20 @@ describe("ProviderModelCatalogLive", () => {
     });
   });
 
+  it("skips Pi discovery when the requested provider is not Pi", async () => {
+    const discoverModelsSpy = vi.spyOn(PiRpcManager.prototype, "discoverModels");
+
+    const catalog = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* Effect.service(ProviderModelCatalog);
+        return yield* service.getCatalog({ provider: "codex" });
+      }).pipe(Effect.provide(testLayer)),
+    );
+
+    expect(discoverModelsSpy).not.toHaveBeenCalled();
+    expect(catalog).toEqual({});
+  });
+
   it("falls back to an empty catalog when Pi discovery fails", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -54,7 +73,7 @@ describe("ProviderModelCatalogLive", () => {
     const catalog = await Effect.runPromise(
       Effect.gen(function* () {
         const service = yield* Effect.service(ProviderModelCatalog);
-        return yield* service.getCatalog();
+        return yield* service.getCatalog({ provider: "pi" });
       }).pipe(Effect.provide(testLayer)),
     );
 
